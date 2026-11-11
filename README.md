@@ -104,3 +104,32 @@ synchronization at every physics step. Long stalls are limited to 100 ms of
 catch-up to keep the UI responsive; sustained overload can still slow simulation.
 Viewer actuator sliders remain available after the startup trajectory completes;
 manual slider jumps are direct targets and do not use the startup easing.
+
+## Separate live RGB window
+
+Running the ordinary command now opens **two windows** by default:
+
+```bash
+python scripts/preview_mujoco.py --yaw 20 --pitch 10
+```
+
+- MuJoCo viewer: orbit, inspect and control the simulation as before.
+- `Fixed camera RGB (live)`: an independent 640×480 window (framebuffer may scale
+  with OS DPI), continuously rendered from `fixed_camera` using the same live
+  simulation state. Main-view navigation does not move this sensor camera.
+  Laser beam and hit spot are included; LiDAR visualization is omitted.
+
+The sensor window refreshes with the main display loop, targeting 60 Hz subject
+to rendering performance. Press Esc while this window has focus, or close it,
+to dismiss only the RGB window. Closing the main viewer exits the program and
+cleans up both windows. `--no-camera-window` disables the extra window;
+`--camera` still switches the main viewer to the sensor perspective.
+No OpenCV installation is required: both windows use GLFW, already supplied
+with MuJoCo. A working desktop/OpenGL display is required for interactive mode.
+`MUJOCO_GL=egl --headless ...` remains the separate export workflow.
+
+To verify the RGB rendering and scene updates without a desktop:
+
+```bash
+MUJOCO_GL=egl python -m unittest discover -s tests -v
+```

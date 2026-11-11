@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fixed RGB camera and planar LiDAR preview for the pan/tilt gimbal."""
 import argparse
+from contextlib import ExitStack
 from pathlib import Path
 import time
 
@@ -98,6 +99,72 @@ def startup_control(data, target, duration):
     data.ctrl[:] = target * (t**3 * (10 - 15*t + 6*t*t))
 
 
+def update_camera_scene(model, data, scene, camera, option, laser_range):
+    """Build only the fixed camera image, independent of the interactive view."""
+    mujoco.mjv_updateScene(model, data, option, None, camera,
+                           mujoco.mjtCatBit.mjCAT_ALL, scene)
+    draw_laser(scene, cast_laser(model, data, laser_range))
+
+
+class CameraWindow:
+    """A separate GLFW window rendering the actual fixed-camera perspective."""
+    def __init__(self, model, width=640, height=480):
+        import glfw
+        self.glfw = glfw
+        self.window = None
+        self.context = None
+        self.width, self.height = width, height
+        previous = glfw.get_current_context()
+        if not glfw.init():
+            raise RuntimeError('Cannot initialize camera display. Start a graphical desktop and check DISPLAY.')
+        glfw.default_window_hints()
+        glfw.window_hint(glfw.RESIZABLE, glfw.FALSE)
+        self.window = glfw.create_window(width, height, 'Fixed camera RGB (live) - Esc to close', None, None)
+        if not self.window:
+            raise RuntimeError('Cannot create live camera window. Check desktop/OpenGL availability.')
+        try:
+            glfw.make_context_current(self.window)
+            glfw.swap_interval(0)
+            self.context = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_100)
+            self.scene = mujoco.MjvScene(model, maxgeom=5000)
+            self.option = mujoco.MjvOption()
+            self.camera = mujoco.MjvCamera()
+            self.camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            self.camera.fixedcamid = model.camera('fixed_camera').id
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            glfw.make_context_current(previous)
+
+    def update(self, model, data, laser_range):
+        glfw = self.glfw
+        glfw.poll_events()
+        if glfw.window_should_close(self.window) or glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
+            return False
+        previous = glfw.get_current_context()
+        try:
+            glfw.make_context_current(self.window)
+            update_camera_scene(model, data, self.scene, self.camera, self.option, laser_range)
+            width, height = glfw.get_framebuffer_size(self.window)
+            mujoco.mjr_render(mujoco.MjrRect(0, 0, width, height), self.scene, self.context)
+            glfw.swap_buffers(self.window)
+        finally:
+            glfw.make_context_current(previous)
+        return True
+
+    def close(self):
+        if self.window:
+            previous = self.glfw.get_current_context()
+            self.glfw.make_context_current(self.window)
+            if self.context is not None:
+                self.context.free()
+            self.glfw.make_context_current(previous)
+            self.glfw.destroy_window(self.window)
+            self.window = None
+        # Do not terminate GLFW: the main MuJoCo viewer still owns a window.
+
+
 def save_frame(path, pixels):
     """Write portable RGB image without additional image dependencies."""
     height, width, _ = pixels.shape
@@ -116,6 +183,7 @@ def main():
     parser.add_argument('--lidar-rays', type=int, default=121)
     parser.add_argument('--laser-range', type=float, default=10, help='Laser maximum meters')
     parser.add_argument('--move-duration', type=float, default=1.5, help='Startup motion duration in seconds')
+    parser.add_argument('--no-camera-window', action='store_true', help='Disable the separate live RGB window')
     parser.add_argument('--camera', action='store_true', help='View through fixed front camera')
     parser.add_argument('--headless', type=Path, help='Write camera.ppm, lidar.ppm and scan.npz to directory; use MUJOCO_GL=egl')
     args = parser.parse_args()
@@ -154,7 +222,13 @@ def main():
         return
 
     from mujoco import viewer as mj_viewer
-    with mj_viewer.launch_passive(model, data) as viewer:
+    with ExitStack() as stack:
+        viewer = stack.enter_context(mj_viewer.launch_passive(model, data))
+        camera_window = None
+        if not args.no_camera_window:
+            camera_window = CameraWindow(model)
+            stack.callback(camera_window.close)
+            print('Live RGB: separate fixed-camera window. Esc closes it; main viewer stays open.')
         if args.camera:
             with viewer.lock():
                 viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
@@ -178,6 +252,9 @@ def main():
                 draw_scan(viewer.user_scn, scan(), args.lidar_range)
                 draw_laser(viewer.user_scn, cast_laser(model, data, args.laser_range))
             viewer.sync()
+            if camera_window is not None and not camera_window.update(model, data, args.laser_range):
+                camera_window.close()
+                camera_window = None
             time.sleep(max(0, 1 / 60 - (time.monotonic() - start)))
 
 
