@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MuJoCo Studio WebViewer with live camera, 3D LiDAR and automatic aiming."""
 import argparse
+import importlib
 import math
 import os
 import sys
@@ -19,6 +20,31 @@ if __package__:
     from . import preview_mujoco as gimbal
 else:
     import preview_mujoco as gimbal
+
+
+class WebBackendUnavailable(RuntimeError):
+    """The installed native Studio extension cannot run the web backend."""
+
+
+def validate_web_backend():
+    """Feature detection is required: a 4.0 version number alone is insufficient."""
+    try:
+        extension = importlib.import_module('mujoco.studio._studio')
+        missing = [name for name in ('headless_ui', 'state_payload') if not hasattr(extension, name)]
+        if not missing:
+            return
+        detail = 'missing native bindings: '+', '.join(missing)
+    except ImportError as error:
+        detail = f'native Studio extension failed to load: {error}'
+    raise WebBackendUnavailable(
+        f'MuJoCo {mujoco.__version__} on {sys.platform}: {detail}.\n'
+        'This installation cannot start Studio WebViewer; installing a Python module named '
+        'headless_ui will not fix it.\n'
+        'For Windows, run this single Python service in WSL2/Linux with a separate Linux '
+        'virtual environment, then open localhost:8080 in the Windows browser. No Docker is needed.\n'
+        'See docs/web-viewer.md (Windows troubleshooting). The native desktop preview '
+        'remains available: python scripts/preview_mujoco.py'
+    )
 
 
 @dataclass(frozen=True)
@@ -171,6 +197,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.port <= 65535 or (args.duration is not None and args.duration <= 0):
         parser.error('Require a valid port and positive duration')
+    validate_web_backend()
     path = Path(__file__).resolve().parents[1]/'assets/simple_pan_tilt_gimbal.xml'
     model = mujoco.MjModel.from_xml_path(str(path))
     data = mujoco.MjData(model)
@@ -195,3 +222,6 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         pass
+    except WebBackendUnavailable as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)

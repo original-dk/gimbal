@@ -2,6 +2,7 @@
 import os
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import mujoco
 
@@ -13,6 +14,15 @@ if HAS_EGL:
 
 @unittest.skipUnless(HAS_EGL, 'Requires EGL')
 class WebViewerTests(unittest.TestCase):
+    def test_web_native_bindings_are_checked_before_launch(self):
+        web.validate_web_backend()
+        with patch.object(web.importlib, 'import_module', return_value=SimpleNamespace()):
+            with self.assertRaisesRegex(web.WebBackendUnavailable, 'missing native bindings'):
+                web.validate_web_backend()
+        with patch.object(web.importlib, 'import_module', side_effect=ImportError('DLL load failed')):
+            with self.assertRaisesRegex(web.WebBackendUnavailable, 'DLL load failed'):
+                web.validate_web_backend()
+
     def test_sensor_messages_pause_reset_and_overlays(self):
         model = mujoco.MjModel.from_xml_path(str(ROOT/'assets/simple_pan_tilt_gimbal.xml'))
         data = mujoco.MjData(model)
