@@ -159,25 +159,35 @@ def marker_pixel(model, data, width=640, height=480):
     return float(x), float(y)
 
 
-def detect_icon(rgb):
-    """Find the white square/black cross using RGB pixels only."""
+@lru_cache(maxsize=1)
+def aruco_detector():
     import cv2
-    values = rgb.astype(np.int16)
-    mask = ((values.min(axis=2) > 85) & (np.ptp(values, axis=2) < 35)).astype(np.uint8) * 255
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates = []
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        if not (9 <= w <= rgb.shape[1] / 6 and 9 <= h <= rgb.shape[0] / 6 and .65 < w / h < 1.5):
-            continue
-        crop = cv2.resize(rgb[y:y+h, x:x+w], (30, 30)).mean(axis=2)
-        # Cross arms must be dark; four surrounding quadrants must be bright.
-        dark = np.mean([crop[15, 15], crop[15, 7], crop[15, 22], crop[7, 15], crop[22, 15]])
-        white = np.mean([crop[7, 7], crop[7, 22], crop[22, 7], crop[22, 22]])
-        if white > 90 and dark < white * .65:
-            candidates.append({'xy': [x + (w-1)/2, y + (h-1)/2], 'bbox': [x, y, w, h]})
-    return candidates[0] if len(candidates) == 1 else None
+    parameters = cv2.aruco.DetectorParameters()
+    parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    return cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), parameters)
+
+
+def detect_icon(rgb):
+    """Detect planar ArUco ID 7; diagonal intersection is perspective-correct center."""
+    import cv2
+    corners, ids, _ = aruco_detector().detectMarkers(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY))
+    if ids is None:
+        return None
+    matches = np.flatnonzero(ids.ravel() == 7)
+    if len(matches) != 1:
+        return None
+    quad = corners[matches[0]].reshape(4, 2)
+    # Unlike averaging corners, intersecting diagonals preserves the tag center
+    # under a projective transform.
+    homogeneous = np.column_stack((quad, np.ones(4)))
+    center = np.cross(np.cross(homogeneous[0], homogeneous[2]),
+                      np.cross(homogeneous[1], homogeneous[3]))
+    if abs(center[2]) < 1e-8:
+        return None
+    xy = center[:2]/center[2]
+    x, y, w, h = cv2.boundingRect(quad)
+    return {'id': 7, 'dictionary': 'DICT_4X4_50', 'xy': xy.tolist(),
+            'bbox': [x, y, w, h], 'corners': quad.tolist()}
 
 
 def fuse_depth(detection, camera_points, width, height, fovy):
@@ -455,12 +465,12 @@ def main():
             mujoco.mj_forward(model, data)
             result = scan()
             renderer.update_scene(data, camera='fixed_camera')
-            draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))
             rgb = renderer.render().copy()
             detection, fusion = estimate_fusion(model, data, rgb, result)
             (args.headless / 'marker.json').write_text(json.dumps({'visible': detection is not None, 'xy': detection['xy'] if detection else None, 'resolution': [640, 480], 'origin': 'top-left', 'source': 'RGB detection'}, indent=2))
             (args.headless / 'fusion.json').write_text(json.dumps({'detection': detection, 'fusion': fusion, 'aim_status': aiming.status if aiming else 'manual'}, indent=2))
-            save_frame(args.headless / 'camera.ppm', rgb)
+            draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))
+            save_frame(args.headless / 'camera.ppm', renderer.render())
             camera = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(camera)
             camera.lookat[:] = [1.1, 0, 0.1]

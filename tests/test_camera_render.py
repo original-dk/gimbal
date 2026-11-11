@@ -18,7 +18,7 @@ class CameraRenderTests(unittest.TestCase):
                 data.joint('scan_target_center_joint').qpos[0] = x
                 mujoco.mj_forward(model, data)
                 renderer.update_scene(data, camera='fixed_camera')
-                preview.draw_laser(renderer.scene, preview.cast_laser(model, data))
+                # Match production sensing: acquire RGB before visualization overlays.
                 rgb = renderer.render().copy()
                 # No marker site or object pose is passed into the fusion estimator.
                 detection, result = preview.estimate_fusion(model, data, rgb, preview.scan_lidar(model, data, max_range=3))
@@ -73,6 +73,24 @@ class CameraRenderTests(unittest.TestCase):
         marker = data.site_xpos[model.site('target_icon_center').id]
         self.assertLess(np.linalg.norm(endpoint-marker), .012)
         self.assertEqual(aim.status, 'tracking')
+
+    def test_aruco_large_tilts_and_in_plane_rotation(self):
+        model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
+        data = mujoco.MjData(model)
+        with mujoco.Renderer(model, height=480, width=640) as renderer:
+            for axis, degrees in [(2, 50), (1, 45), (0, 60)]:
+                angle = np.deg2rad(degrees)
+                quat = np.zeros(4)
+                quat[0], quat[axis+1] = np.cos(angle/2), np.sin(angle/2)
+                data.joint('scan_target_center_joint').qpos[3:7] = quat
+                mujoco.mj_forward(model, data)
+                renderer.update_scene(data, camera='fixed_camera')
+                detection, fusion = preview.estimate_fusion(model, data, renderer.render().copy(), preview.scan_lidar(model, data))
+                self.assertIsNotNone(detection, (axis, degrees))
+                self.assertEqual(detection['id'], 7)
+                self.assertEqual(len(detection['corners']), 4)
+                np.testing.assert_allclose(detection['xy'], preview.marker_pixel(model, data), atol=2)
+                self.assertTrue(fusion['valid'], (axis, degrees, fusion))
 
     def test_live_scene_reflects_object_changes(self):
         model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))

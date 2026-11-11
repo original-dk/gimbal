@@ -153,7 +153,7 @@ as objects move. Orbiting the main view does not change the fixed sensor pose.
 
 ## Attached icon and live pixel coordinates
 
-The front (-X) face of the central red box has a white square/black-cross icon.
+The front (-X) face of the central red box has a planar ArUco marker (DICT_4X4_50, ID 7).
 Its geometry and `target_icon_center` site belong to the movable body's local
 frame, so both follow translation and rotation. Run the usual preview command:
 
@@ -168,11 +168,9 @@ is 640×480; OS DPI can scale the framebuffer. Move the central red box in the
 main viewer to watch its coordinates change. The icon itself appears in both
 windows; the coordinate HUD is shown only in the independent RGB window.
 
-The live center is detected from RGB pixels using the white square and black
-cross pattern, rather than reading the marker's simulation site. Missing or
-ambiguous detections show `not visible`. Detection is a simple pattern heuristic,
-not a general marker tracker: small, severely rotated, occluded or poorly lit
-icons may not be detected. The `marker_pixel` projection helper remains for
+The live center is detected from RGB pixels using ArUco corner and ID detection, rather than reading the marker's simulation site. Missing or
+ambiguous detections show `not visible`. Perspective-aware corner detection tolerates substantial tilt and in-plane
+rotation, but very small, edge-on, occluded or poorly lit markers can still fail. The `marker_pixel` projection helper remains for
 simulation verification only; it is not used for live detection or depth.
 Icon geometry is visual-only and excluded from laser/LiDAR ranging.
 Headless exports additionally include `marker.json` with visibility, XY,
@@ -294,3 +292,32 @@ the RGB display does not stop automatic aiming. The display and sensor capture
 share the fixed camera calibration; display DPI does not affect the control
 measurement. The sensing image excludes visualization overlays. Headless mode
 runs the same RGB + 3D LiDAR + control loop and exports final aiming status.
+
+## Planar ArUco marker
+
+The original cross has been replaced with **DICT_4X4_50, ID 7**. The tag remains
+flat on the central movable box. Its total printed area is 130×130 mm including
+a white quiet zone; the encoded black-border square is 97.5×97.5 mm. This is
+larger than the earlier cross to preserve readable cells at 640×480 resolution.
+The marker center is the intersection of detected diagonals, not the average
+of corners, so perspective distortion does not shift the center definition.
+Detected corners and ID are included in `fusion.json`.
+
+Run the normal command and rotate/move the box:
+
+```bash
+python scripts/preview_mujoco.py
+```
+
+The printable canonical image is `assets/textures/aruco_4x4_50_id7.png`.
+The separate `_texture.png` file is mirrored to compensate MuJoCo's front-face
+box UV mapping; use the canonical image for printing or detector tests.
+No new dependency beyond the existing OpenCV headless package is needed.
+Recognition uses the clean sensor image before laser/HUD overlays; the live
+window and exported preview retain those overlays. Depth remains estimated
+from 3D LiDAR, not from the marker's known size or true simulation pose.
+
+Tests exercise rendered yaw 50°, pitch 45°, and in-plane rotation 60°, including
+depth fusion. These are tested cases, not guaranteed angular operating limits.
+Near edge-on views, full occlusion or insufficient point-cloud support still
+produce unavailable results; the aiming controller then holds its command.
