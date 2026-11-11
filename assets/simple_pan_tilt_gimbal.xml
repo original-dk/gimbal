@@ -11,17 +11,35 @@
     <motor ctrllimited="false"/>
   </default>
 
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.35 0.55 0.75"
+             rgb2="0.85 0.9 0.95" width="512" height="512"/>
+    <texture name="floor_grid" type="2d" builtin="checker" rgb1="0.65 0.68 0.7"
+             rgb2="0.82 0.84 0.86" width="512" height="512"/>
+    <material name="floor_material" texture="floor_grid" texrepeat="8 8" texuniform="true"/>
+  </asset>
+
   <worldbody>
     <light name="top_light" pos="0 -1 2" dir="0 0 -1"/>
     <geom name="ground" group="0" type="plane" pos="0 0 0"
-          size="2 2 0.1" rgba="0.82 0.84 0.87 1"
+          size="6 6 0.1" material="floor_material"
           contype="0" conaffinity="0"/>
 
-    <!-- Visible scan targets, in the environment ray-casting group. -->
+    <!-- Static targets at multiple depths, all detectable by LiDAR. -->
     <geom name="scan_target_center" group="0" type="box" pos="1.5 0 0.25"
-          size="0.08 0.25 0.25" rgba="0.8 0.3 0.2 1"/>
-    <geom name="scan_target_left" group="0" type="box" pos="1.1 0.8 0.2"
-          size="0.12 0.12 0.2" rgba="0.3 0.5 0.8 1"/>
+          size="0.08 0.10 0.25" rgba="0.85 0.28 0.16 1"/>
+    <geom name="scan_target_left" group="0" type="box" pos="1.1 0.48 0.12"
+          euler="0 0 0.25" size="0.12 0.12 0.12" rgba="0.18 0.45 0.85 1"/>
+    <geom name="near_sphere" group="0" type="sphere" pos="0.95 -0.30 0.12"
+          size="0.12" rgba="0.95 0.68 0.08 1"/>
+    <geom name="middle_cylinder" group="0" type="cylinder" pos="1.8 -0.72 0.25"
+          size="0.14 0.25" rgba="0.15 0.7 0.42 1"/>
+    <geom name="far_box" group="0" type="box" pos="2.65 0.65 0.28"
+          euler="0 0 -0.3" size="0.22 0.18 0.28" rgba="0.62 0.3 0.78 1"/>
+    <geom name="far_sphere" group="0" type="sphere" pos="2.9 -0.30 0.20"
+          size="0.20" rgba="0.1 0.65 0.78 1"/>
+    <geom name="far_column" group="0" type="cylinder" pos="3.2 1.35 0.38"
+          size="0.14 0.38" rgba="0.85 0.5 0.2 1"/>
 
     <!-- Fixed base: X forward, Y left, Z up. -->
     <body name="base" pos="0 0 0.015">

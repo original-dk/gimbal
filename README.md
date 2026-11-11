@@ -62,7 +62,8 @@ Both sensors are mounted at the front of the base and do not rotate with yaw or
 pitch. Camera vertical FOV is 60 degrees. LiDAR defaults to a 120-degree
 horizontal fan, 3 m maximum range and 121 rays at the sensor height. The cyan
 outline shows the full sensing region, green rays stop at hits, and red marks
-show returns. Two static obstacles demonstrate occlusion and ranging.
+show returns. Seven colored boxes, spheres and cylinders at different distances demonstrate
+depth, occlusion and ranging. A checkerboard floor provides perspective cues.
 
 ```bash
 # Overview with live LiDAR visualization
