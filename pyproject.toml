@@ -2,4 +2,4 @@
 name = "simple-pan-tilt-gimbal"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["mujoco>=3.2", "numpy>=2", "opencv-python-headless>=4.10"]
+dependencies = ["mujoco>=4.0", "numpy>=2", "opencv-python-headless>=4.10"]

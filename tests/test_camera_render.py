@@ -32,6 +32,22 @@ class CameraRenderTests(unittest.TestCase):
                 self.assertFalse(missing['valid'])
             self.assertIsNone(preview.detect_icon(np.zeros((480, 640, 3), dtype=np.uint8)))
 
+    def test_rendered_tilted_marker_uses_3d_patch(self):
+        model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
+        data = mujoco.MjData(model)
+        angle = np.deg2rad(20)
+        data.joint('scan_target_center_joint').qpos[3:7] = [np.cos(angle/2), 0, np.sin(angle/2), 0]
+        mujoco.mj_forward(model, data)
+        with mujoco.Renderer(model, height=480, width=640) as renderer:
+            renderer.update_scene(data, camera='fixed_camera')
+            detection, result = preview.estimate_fusion(model, data, renderer.render().copy(),
+                                                        preview.scan_lidar(model, data))
+            self.assertIsNotNone(detection)
+            self.assertTrue(result['valid'], result)
+            # Truth is used only here as an independent verification reference.
+            truth = data.site_xpos[model.site('target_icon_center').id][0] - data.cam_xpos[0][0]
+            self.assertAlmostEqual(result['depth_z_m'], truth, delta=.015)
+
     def test_live_scene_reflects_object_changes(self):
         model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
         data = mujoco.MjData(model)

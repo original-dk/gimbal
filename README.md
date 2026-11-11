@@ -19,7 +19,7 @@ A compact MJCF model for a two-axis gimbal with a laser pointer.
 - `pitch_stage`: pitch shaft and laser housing
 - `front_sensors`: front-mounted camera and LiDAR module, fixed to the base
 - `fixed_camera`: RGB camera facing +X; image up is +Z, image right is -Y
-- `lidar_origin`: origin of the simulated planar LiDAR
+- `lidar_origin`: origin of the simulated 3D LiDAR
 - `laser_origin`: laser emission site
 
 The model includes two position actuators:
@@ -52,7 +52,7 @@ Run from this project directory so the default XML path resolves.
 
 - Device geometry remains visual-only. The seven movable targets collide with each other and the ground.
 - The preview casts a laser ray from `laser_origin` along its moving +X axis. The red beam stops at the nearest environment surface and shows a red hit spot.
-- The preview implements a planar LiDAR using `mj_ray`. It models geometric ranges, not radar Doppler, reflectivity, noise or material effects.
+- The preview implements a 3D LiDAR using batched `mj_multiRay`. It models geometric ranges, not radar Doppler, reflectivity, noise or material effects.
 - The 16x16 grid is best drawn as an image overlay initially, rather than as a collidable transparent object.
 - This model has not been calibrated against the physical gimbal. Replace all placeholder dimensions before using it for real-world angle prediction.
 
@@ -60,9 +60,9 @@ Run from this project directory so the default XML path resolves.
 
 Both sensors are mounted at the front of the base and do not rotate with yaw or
 pitch. Camera vertical FOV is 60 degrees. LiDAR defaults to a 120-degree
-horizontal fan, 3 m maximum range and 121 rays at the sensor height. The cyan
-outline shows the full sensing region, green rays stop at hits, and red marks
-show returns. Seven movable colored boxes, spheres and cylinders at different distances demonstrate
+horizontal FOV, 60-degree vertical FOV, 3 m maximum range and 41 layers × 121
+beams (4961 rays). Cyan wireframes show the 3D sensing volume and green points
+show returns (display is subsampled, measurements are not). Seven movable colored boxes, spheres and cylinders at different distances demonstrate
 depth, occlusion and ranging. A checkerboard floor provides perspective cues.
 
 ```bash
@@ -98,8 +98,8 @@ python scripts/preview_mujoco.py --yaw 20 --pitch 10 --move-duration 1.5
 ```
 
 Startup commands use a smooth quintic trajectory; position actuators have damping
-ratio 1 to reduce ringing. Physics retains its 2 ms step while scans and drawing
-update at approximately 60 Hz. This avoids performing all ray casts and viewer
+ratio 1 to reduce ringing. Physics retains its 2 ms step, scans and RGB fusion update at 15 Hz, and drawing
+updates at approximately 60 Hz. This avoids performing all ray casts and viewer
 synchronization at every physics step. Long stalls are limited to 100 ms of
 catch-up to keep the UI responsive; sustained overload can still slow simulation.
 Viewer actuator sliders remain available after the startup trajectory completes;
@@ -189,19 +189,19 @@ The camera FOV/resolution define pinhole intrinsics. The fixed camera and LiDAR
 installation poses define ideal simulation extrinsics; these are known model
 calibration, not a calibration procedure estimated from measurements. RGB pattern
 detection supplies the label pixel. LiDAR hits are transformed into optical camera
-coordinates, associated by projected horizontal position, split at discontinuities,
-and fitted to a local vertical plane. The camera ray through the detected label
+coordinates, associated in both image X and Y near the detected icon, split at
+depth discontinuities, and fitted to a local 3D plane using RANSAC and SVD. The camera ray through the detected label
 intersects this plane to estimate depth. No object identity, tag world position,
 true depth, or true object pose is used to fill the estimate.
 
-**Single-layer limitation:** the scan is below the label, so this extrapolates a
-vertically planar surface from its horizontal cross-section. Tilting the object,
-curved surfaces, partial occlusion or a different object at the same image column
-can bias the result or cause a wrong association. A small fit residual does not
-prove this assumption. The estimator rejects missing detections, insufficient
-returns, degenerate/nonlinear fits and multiple candidate surfaces; it cannot
-detect every incorrect association or out-of-plane tilt. Use a multilayer LiDAR
-or additional visual plane constraints if arbitrary 3D motion must be supported.
+The plane can tilt in any direction: there is no vertical-surface assumption.
+At least six inliers with spread in two dimensions must surround the icon ray
+in image space. A single scan line, sparse patch, multiple surfaces, strong
+curvature, or large residual causes an unavailable result rather than a fallback
+to true depth. Icon recognition can still fail under severe rotation/occlusion;
+small curved patches or incorrect associations can still produce biased estimates.
+The estimate measures the supporting surface, approximately 4 mm behind the
+front of the decorative icon in this model.
 
 Headless runs export `fusion.json` with detection, validity, metric estimates,
 fit count/residual or failure reason. `marker.json` now also uses RGB detection.
@@ -210,3 +210,25 @@ To test actual rendering, icon detection and depth changes:
 ```bash
 MUJOCO_GL=egl python -m unittest discover -s tests -v
 ```
+
+## 3D scan configuration and performance
+
+Requires MuJoCo 4.0+ for the batch ray API used here.
+
+```bash
+python scripts/preview_mujoco.py --lidar-fov 120 --lidar-vfov 60 \
+  --lidar-rays 121 --lidar-layers 41 --lidar-range 3 --lidar-hz 15
+```
+
+Directions are cached, ray intersections run in one native batch, and the viewer
+shows at most 500 return points plus FOV wireframes. The full scan is retained for
+fusion/export. Scan and RGB detection/fusion refresh together at `--lidar-hz`;
+HUD coordinates/depth remain at the last measurement between refreshes. Display
+and physics run independently. Setting `--lidar-layers 1` is a diagnostic planar
+scan; depth fusion rejects its insufficient 3D support.
+
+`scan.npz` includes `shape=[layers, rays]`, flattened directions/ranges/hits in
+layer-major order and world-space hit `points`. Range misses retain max range
+and `hits=False`. Live scan frequency is a target, not a real-time guarantee;
+fast object motion can move between measurements. This models ideal geometric
+returns, not spinning-scan distortion, intensity, multipath or sensor noise.

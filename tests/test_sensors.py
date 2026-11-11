@@ -32,13 +32,13 @@ class SensorTests(unittest.TestCase):
         np.testing.assert_allclose(self.data.site_xpos[site], lidar)
 
     def test_ranges_hits_and_maximum_range(self):
-        origin, directions, ranges, hits = preview.scan_lidar(self.model, self.data)
+        origin, directions, ranges, hits = preview.scan_lidar(self.model, self.data, layers=1)
         self.assertTrue(hits[60])
         self.assertAlmostEqual(ranges[60], 1.42 - origin[0], places=8)
         np.testing.assert_allclose(directions[60], [1, 0, 0], atol=1e-12)
         self.assertTrue((~hits).any())
         np.testing.assert_allclose(ranges[~hits], 3)
-        _, _, ranges, hits = preview.scan_lidar(self.model, self.data, max_range=.5)
+        _, _, ranges, hits = preview.scan_lidar(self.model, self.data, max_range=.5, layers=1)
         self.assertFalse(hits.any())
         np.testing.assert_allclose(ranges, .5)
 
@@ -116,7 +116,7 @@ class SensorTests(unittest.TestCase):
         self.assertIsNone(preview.marker_pixel(self.model, self.data))
 
     def test_integer_max_range_preserves_fractional_returns(self):
-        origin, _, ranges, hits = preview.scan_lidar(self.model, self.data, max_range=3)
+        origin, _, ranges, hits = preview.scan_lidar(self.model, self.data, max_range=3, layers=1)
         self.assertTrue(hits[60])
         self.assertAlmostEqual(ranges[60], 1.42 - origin[0], places=8)
         self.assertEqual(ranges.dtype.kind, 'f')
@@ -128,6 +128,40 @@ class SensorTests(unittest.TestCase):
         # Degenerate coincident returns cannot define a plane.
         points = np.tile([0, -.055, 1.2], (5, 1))
         self.assertFalse(preview.fuse_depth(detection, points, 640, 480, 60)['valid'])
+
+    def test_3d_scan_layers_and_batch_matches_individual_rays(self):
+        origin, directions, ranges, hits = preview.scan_lidar(self.model, self.data)
+        self.assertEqual(directions.shape, (41*121, 3))
+        self.assertGreater(np.ptp(directions[:, 2]), .9)
+        np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1)
+        groups = np.array([1, 0, 0, 0, 0, 0], dtype=np.uint8)
+        gid = np.zeros(1, dtype=np.int32)
+        for index in [0, 60, 20*121+60, 40*121+60, 4000]:
+            distance = mujoco.mj_ray(self.model, self.data, origin, directions[index], groups, 1, -1, gid)
+            hit = 0 <= distance <= 3
+            self.assertEqual(hits[index], hit)
+            self.assertAlmostEqual(ranges[index], distance if hit else 3)
+
+    def test_full_3d_plane_with_tilt_and_outliers(self):
+        detection = {'xy': [320, 240], 'bbox': [300, 220, 40, 40]}
+        x, y = np.meshgrid(np.linspace(-.07, .07, 9), np.linspace(-.07, .07, 9))
+        # Tilt around both horizontal axes: impossible to infer from one scan line.
+        points = np.column_stack((x.ravel(), y.ravel(), 1.4+.4*x.ravel()+.6*y.ravel()))
+        outliers = points[::8].copy()
+        outliers[:, 2] += .025
+        result = preview.fuse_depth(detection, np.vstack([points, outliers]), 640, 480, 60)
+        self.assertTrue(result['valid'], result)
+        self.assertAlmostEqual(result['depth_z_m'], 1.4, places=5)
+        # Remove vertical diversity: the estimator must reject a single line.
+        line = points[36:45]
+        self.assertFalse(preview.fuse_depth(detection, line, 640, 480, 60)['valid'])
+
+    def test_dense_visualization_preserves_laser_capacity(self):
+        scene = mujoco.MjvScene(self.model, maxgeom=1000)
+        scan = preview.scan_lidar(self.model, self.data, rays=401, layers=41)
+        preview.draw_scan(scene, scan, 3)
+        preview.draw_laser(scene, preview.cast_laser(self.model, self.data))
+        self.assertLessEqual(scene.ngeom, 1000)
 
     def test_visualization_contains_range_and_returns(self):
         scene = mujoco.MjvScene(self.model, maxgeom=5000)
