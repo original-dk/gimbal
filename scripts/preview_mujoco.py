@@ -238,6 +238,50 @@ def fuse_depth(detection, camera_points, width, height, fovy):
     return fits[0] if len(fits) == 1 else fail('ambiguous, sparse or nonplanar 3D surface')
 
 
+def camera_calibration(model, data, width=640, height=480):
+    """Return pinhole K and optical-camera-to-world rigid transform from calibration."""
+    if width <= 0 or height <= 0:
+        raise ValueError('Image dimensions must be positive')
+    camera = model.camera('fixed_camera').id
+    focal = height / (2*np.tan(np.deg2rad(model.cam_fovy[camera])/2))
+    intrinsics = np.array([[focal, 0, width/2], [0, focal, height/2], [0, 0, 1.]])
+    transform = np.eye(4)
+    transform[:3, :3] = data.cam_xmat[camera].reshape(3, 3) @ np.diag([1, -1, -1])
+    transform[:3, 3] = data.cam_xpos[camera]
+    return intrinsics, transform
+
+
+def pixel_to_3d(x_px, y_px, estimated_z_m, intrinsics, *, frame='camera', camera_to_world=None):
+    """Back-project a pixel using *estimated optical-axis depth* in meters.
+
+    Camera axes: X right, Y down, Z forward. K must match the actual image
+    resolution. World output requires the calibrated 4x4 camera-to-world pose.
+    This method accepts measured depth only; it has no access to scene objects.
+    """
+    values = np.asarray([x_px, y_px, estimated_z_m], dtype=float)
+    if not np.isfinite(values).all() or estimated_z_m <= 0:
+        raise ValueError('Pixel coordinates must be finite and estimated Z must be positive and finite')
+    k = np.asarray(intrinsics, dtype=float)
+    if k.shape != (3, 3) or not np.isfinite(k).all() or k[0, 0] <= 0 or k[1, 1] <= 0 or not np.allclose(k[2], [0, 0, 1]):
+        raise ValueError('Expected a finite 3x3 pinhole intrinsic matrix with positive focal lengths')
+    try:
+        ray = np.linalg.solve(k, [x_px, y_px, 1.])
+    except np.linalg.LinAlgError as error:
+        raise ValueError('Intrinsic matrix must be invertible') from error
+    point = ray * (estimated_z_m / ray[2])
+    if frame == 'camera':
+        return point
+    if frame != 'world':
+        raise ValueError("frame must be 'camera' or 'world'")
+    transform = np.asarray(camera_to_world, dtype=float)
+    if transform.shape != (4, 4) or not np.isfinite(transform).all() or not np.allclose(transform[3], [0, 0, 0, 1]):
+        raise ValueError('World output requires a finite calibrated 4x4 camera-to-world transform')
+    rotation = transform[:3, :3]
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6) or not np.isclose(np.linalg.det(rotation), 1, atol=1e-6):
+        raise ValueError('Camera-to-world rotation must be a proper rigid rotation')
+    return rotation @ point + transform[:3, 3]
+
+
 def estimate_fusion(model, data, rgb, scan):
     """Use calibrated sensor poses to transform LiDAR measurements into RGB frame."""
     detection = detect_icon(rgb)
@@ -248,6 +292,13 @@ def estimate_fusion(model, data, rgb, scan):
     points = (world_points - data.cam_xpos[camera]) @ optical_rotation
     height, width = rgb.shape[:2]
     result = fuse_depth(detection, points, width, height, model.cam_fovy[camera])
+    if result['valid']:
+        intrinsics, transform = camera_calibration(model, data, width, height)
+        x, y = detection['xy']
+        estimated_z = result['depth_z_m']
+        result['point_camera_m'] = pixel_to_3d(x, y, estimated_z, intrinsics).tolist()
+        result['point_world_m'] = pixel_to_3d(x, y, estimated_z, intrinsics,
+                                            frame='world', camera_to_world=transform).tolist()
     return detection, result
 
 
@@ -262,7 +313,9 @@ def draw_marker_hud(model, data, width, height, context, detection=None, fusion=
         depth_text = (f"Fusion Z={fusion['depth_z_m']:.3f} m | range={fusion['distance_m']:.3f} m | N={fusion['points']}"
                       if fusion['valid'] else 'Fusion unavailable: ' + fusion['reason'])
         mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,
-                           viewport, depth_text, 'Local 3D plane | RGB + 3D LiDAR', context)
+                           viewport, depth_text, ('World XYZ: ' + ', '.join(f'{v:.3f}' for v in fusion['point_world_m']) + ' m'
+                                                 if fusion['valid'] and 'point_world_m' in fusion
+                                                 else 'Local 3D plane | RGB + 3D LiDAR'), context)
     if pixel is not None:
         x, y = int(round(pixel[0])), height - 1 - int(round(pixel[1]))
         for dx, dy, w, h in [(-8, 0, 17, 1), (0, -8, 1, 17)]:

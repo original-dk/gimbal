@@ -232,3 +232,35 @@ layer-major order and world-space hit `points`. Range misses retain max range
 and `hits=False`. Live scan frequency is a target, not a real-time guarantee;
 fast object motion can move between measurements. This models ideal geometric
 returns, not spinning-scan distortion, intensity, multipath or sensor noise.
+
+## Convert fused pixel/depth to 3D coordinates
+
+`pixel_to_3d(x_px, y_px, estimated_z_m, intrinsics, *, frame='camera',
+camera_to_world=None)` returns a NumPy `[X, Y, Z]` vector in meters. Pass
+`fusion['depth_z_m']` from a valid fusion result, not straight-line range and not
+simulation ground truth. K must correspond to the input image resolution.
+
+```python
+from scripts.preview_mujoco import camera_calibration, pixel_to_3d
+
+# model/data provide only the calibrated camera parameters and pose here.
+K, T_world_camera = camera_calibration(model, data, width=640, height=480)
+if fusion['valid'] and detection is not None:
+    x, y = detection['xy']
+    z = fusion['depth_z_m']
+    camera_xyz = pixel_to_3d(x, y, z, K)
+    world_xyz = pixel_to_3d(x, y, z, K, frame='world',
+                            camera_to_world=T_world_camera)
+```
+
+Camera optical axes are X right, Y down, Z forward; world axes are X forward,
+Y left, Z up. The pinhole inverse is `P_camera = Z * inv(K) @ [x, y, 1]`, and
+`P_world = R_world_camera @ P_camera + t_world_camera`. Use the camera-to-world
+transform, not its inverse. For a moving camera use its pose at measurement time.
+Pixels must already be undistorted for a real camera; this simulated camera has
+no distortion. No object/tag pose is queried by this conversion method.
+
+Valid live fusion results and `fusion.json` now include `point_camera_m` and
+`point_world_m`; the RGB HUD also shows world XYZ. Invalid fusion results do not
+produce coordinates. Measurement, association and calibration errors propagate
+into XYZ: these are estimated coordinates, not corrected true positions.
