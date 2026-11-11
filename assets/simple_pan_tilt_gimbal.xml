@@ -4,7 +4,7 @@
 
   <default>
     <joint damping="0.08" armature="0.002"/>
-    <geom friction="0.8 0.1 0.1"
+    <geom group="1" friction="0.8 0.1 0.1"
           solref="0.01 1"
           contype="0"
           conaffinity="0"/>
@@ -13,9 +13,15 @@
 
   <worldbody>
     <light name="top_light" pos="0 -1 2" dir="0 0 -1"/>
-    <geom name="ground" type="plane" pos="0 0 0"
+    <geom name="ground" group="0" type="plane" pos="0 0 0"
           size="2 2 0.1" rgba="0.82 0.84 0.87 1"
           contype="0" conaffinity="0"/>
+
+    <!-- Visible scan targets, in the environment ray-casting group. -->
+    <geom name="scan_target_center" group="0" type="box" pos="1.5 0 0.25"
+          size="0.08 0.25 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="scan_target_left" group="0" type="box" pos="1.1 0.8 0.2"
+          size="0.12 0.12 0.2" rgba="0.3 0.5 0.8 1"/>
 
     <!-- Fixed base: X forward, Y left, Z up. -->
     <body name="base" pos="0 0 0.015">
@@ -26,18 +32,19 @@
             pos="0 0 0.060" size="0.040 0.045"
             rgba="0.62 0.65 0.69 1"/>
 
-      <!-- Fixed camera, body forward direction is +X.
-           MuJoCo camera looks along local -Z, so rotate it toward +X. -->
-      <camera name="fixed_camera"
-              pos="0.020 -0.145 0.105"
-              euler="0 -1.57079632679 0"
-              fovy="60"/>
-
-      <!-- LiDAR reference frame; attach a ray sensor in code if required. -->
-      <site name="lidar_origin"
-            pos="-0.035 0.145 0.105"
-            type="sphere" size="0.008"
-            rgba="0.9 0.1 0.1 1"/>
+      <!-- Fixed front sensor module; camera image right is -Y, up is +Z. -->
+      <body name="front_sensors" pos="0.14 0 0.10">
+        <geom name="camera_housing" type="box" size="0.025 0.035 0.025"
+              rgba="0.12 0.14 0.17 1"/>
+        <geom name="camera_lens" type="cylinder" pos="0.027 0 0"
+              euler="0 1.57079632679 0" size="0.015 0.006" rgba="0.1 0.5 0.8 1"/>
+        <camera name="fixed_camera" pos="0.035 0 0"
+                xyaxes="0 -1 0 0 0 1" fovy="60"/>
+        <geom name="lidar_housing" type="cylinder" pos="0 0 0.055"
+              size="0.025 0.025" rgba="0.15 0.65 0.55 1"/>
+        <site name="lidar_origin" pos="0.028 0 0.055"
+              type="sphere" size="0.004" rgba="0 1 0.6 1"/>
+      </body>
 
       <!-- Yaw stage rotates around world/local Z. -->
       <body name="yaw_stage" pos="0 0 0.105">

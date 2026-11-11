@@ -9,7 +9,7 @@ A compact MJCF model for a two-axis gimbal with a laser pointer.
 - Z: up
 - `yaw_joint`: hinge around +Z
 - `pitch_joint`: hinge around local -Y
-- Positive pitch rais[simple_pan_tilt_gimbal.xml](assets/simple_pan_tilt_gimbal.xml)es the laser direction.
+- Positive pitch raises the laser direction.
 - Laser optical direction: local +X of `pitch_stage` / `laser_origin`.
 
 ## Bodies and sensors
@@ -17,8 +17,9 @@ A compact MJCF model for a two-axis gimbal with a laser pointer.
 - `base`: fixed base plate and pedestal
 - `yaw_stage`: yaw rotating platform and pitch supports
 - `pitch_stage`: pitch shaft and laser housing
-- `fixed_camera`: fixed camera attached to the base
-- `lidar_origin`: fixed LiDAR reference site
+- `front_sensors`: front-mounted camera and LiDAR module, fixed to the base
+- `fixed_camera`: RGB camera facing +X; image up is +Z, image right is -Y
+- `lidar_origin`: origin of the simulated planar LiDAR
 - `laser_origin`: laser emission site
 
 The model includes two position actuators:
@@ -51,6 +52,33 @@ Run from this project directory so the default XML path resolves.
 
 - Geometries are currently visual-only (`contype=0`, `conaffinity=0`) to keep this first model simple and avoid self-collision complications.
 - The laser housing is visual geometry. The laser ray itself should be calculated separately using MuJoCo ray casting (`mj_ray`) from `laser_origin` along the site's +X direction.
-- `fixed_camera` is a MuJoCo camera. `lidar_origin` is only a reference site; a LiDAR scanner still needs to be implemented using ray casting or an external sensor plugin.
+- The preview implements a planar LiDAR using `mj_ray`. It models geometric ranges, not radar Doppler, reflectivity, noise or material effects.
 - The 16x16 grid is best drawn as an image overlay initially, rather than as a collidable transparent object.
 - This model has not been calibrated against the physical gimbal. Replace all placeholder dimensions before using it for real-world angle prediction.
+
+## Fixed vision and LiDAR
+
+Both sensors are mounted at the front of the base and do not rotate with yaw or
+pitch. Camera vertical FOV is 60 degrees. LiDAR defaults to a 120-degree
+horizontal fan, 3 m maximum range and 121 rays at the sensor height. The cyan
+outline shows the full sensing region, green rays stop at hits, and red marks
+show returns. Two static obstacles demonstrate occlusion and ranging.
+
+```bash
+# Overview with live LiDAR visualization
+python scripts/preview_mujoco.py --lidar-fov 120 --lidar-range 3 --lidar-rays 121
+# Look through the fixed front camera (use the viewer camera selector to switch)
+python scripts/preview_mujoco.py --camera
+# No display required: RGB image, overview with scan, and numeric scan data
+MUJOCO_GL=egl python scripts/preview_mujoco.py --headless /tmp/gimbal-sensors
+python -m unittest discover -s tests -v
+```
+
+In this cloud instance, use `/workspace/.venvs/gimbal/bin/python` for `python`.
+Exports are `camera.ppm`, `lidar.ppm` and `scan.npz`. PPM is a standard RGB image
+format. NPZ contains world-space `origin`, unit `directions`, meter `ranges` and
+boolean `hits`. No-return rays use the maximum range with `hits=False`.
+Sensor scans include static and moving geometry in geom group 0. Device geometry
+uses group 1 to exclude self-returns; put new detectable obstacles in group 0.
+Visualization is a scene overlay, so it does not affect measurements or physics.
+The interactive camera mode shows this overlay; the exported RGB image is clean.
