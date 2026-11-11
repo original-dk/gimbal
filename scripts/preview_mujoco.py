@@ -21,7 +21,7 @@ def scan_lidar(model, data, fov=120.0, max_range=3.0, rays=121):
     angles = np.linspace(-np.deg2rad(fov) / 2, np.deg2rad(fov) / 2, rays)
     local = np.column_stack((np.cos(angles), np.sin(angles), np.zeros(rays)))
     directions = local @ data.site_xmat[site].reshape(3, 3).T
-    ranges = np.full(rays, max_range)
+    ranges = np.full(rays, max_range, dtype=float)
     hits = np.zeros(rays, dtype=bool)
     groups = np.array([1, 0, 0, 0, 0, 0], dtype=np.uint8)
     geom_id = np.zeros(1, dtype=np.int32)
@@ -139,13 +139,104 @@ def marker_pixel(model, data, width=640, height=480):
     return float(x), float(y)
 
 
-def draw_marker_hud(model, data, width, height, context):
-    pixel = marker_pixel(model, data, width, height)
+def detect_icon(rgb):
+    """Find the white square/black cross using RGB pixels only."""
+    import cv2
+    values = rgb.astype(np.int16)
+    mask = ((values.min(axis=2) > 130) & (np.ptp(values, axis=2) < 35)).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if not (9 <= w <= rgb.shape[1] / 6 and 9 <= h <= rgb.shape[0] / 6 and .65 < w / h < 1.5):
+            continue
+        crop = cv2.resize(rgb[y:y+h, x:x+w], (30, 30)).mean(axis=2)
+        # Cross arms must be dark; four surrounding quadrants must be bright.
+        dark = np.mean([crop[15, 15], crop[15, 7], crop[15, 22], crop[7, 15], crop[22, 15]])
+        white = np.mean([crop[7, 7], crop[7, 22], crop[22, 7], crop[22, 22]])
+        if white > 130 and dark < white * .65:
+            candidates.append({'xy': [x + (w-1)/2, y + (h-1)/2], 'bbox': [x, y, w, h]})
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def fuse_depth(detection, camera_points, width, height, fovy):
+    """Intersect the RGB ray with a vertical plane fitted to associated LiDAR hits.
+
+    Inputs contain measurements and calibration only, no object poses or IDs.
+    Optical camera coordinates: +X right, +Y down, +Z forward.
+    """
+    if detection is None:
+        return {'valid': False, 'reason': 'icon not detected or ambiguous'}
+    u, v = detection['xy']
+    f = height / (2 * np.tan(np.deg2rad(fovy) / 2))
+    points = np.asarray(camera_points)
+    if len(points) < 3:
+        return {'valid': False, 'reason': 'insufficient LiDAR returns'}
+    points = points[np.isfinite(points).all(axis=1) & (points[:, 2] > .05)]
+    projected_u = width / 2 + f * points[:, 0] / points[:, 2]
+    gate = max(12, detection['bbox'][2] * .65)
+    points = points[np.abs(projected_u - u) < gate]
+    if len(points) < 3:
+        return {'valid': False, 'reason': 'no matching LiDAR surface'}
+    # Split depth discontinuities to avoid fitting through different objects.
+    cuts = np.flatnonzero(np.linalg.norm(np.diff(points[:, [0, 2]], axis=0), axis=1) > .12) + 1
+    groups = np.split(points, cuts)
+    fits = []
+    ray = np.array([(u-width/2)/f, (v-height/2)/f, 1.0])
+    for group in groups:
+        if len(group) < 3:
+            continue
+        horizontal = group[:, [0, 2]]
+        center = horizontal.mean(axis=0)
+        _, singular, vh = np.linalg.svd(horizontal-center, full_matrices=False)
+        if singular[0] < .025 or singular[1] / singular[0] > .15:
+            continue
+        normal = vh[-1]
+        residual = float(np.sqrt(np.mean(((horizontal-center) @ normal)**2)))
+        denominator = normal @ ray[[0, 2]]
+        if residual > .008 or abs(denominator) < .15:
+            continue
+        z = float((normal @ center) / denominator)
+        hit = ray * z
+        if z <= 0 or abs(hit[1] - group[:, 1].mean()) > .35:
+            continue
+        # Restrict intersection to the measured horizontal extent.
+        if not horizontal[:, 0].min()-.015 <= hit[0] <= horizontal[:, 0].max()+.015:
+            continue
+        fits.append({'valid': True, 'depth_z_m': z, 'distance_m': float(np.linalg.norm(hit)),
+                     'points': len(group), 'residual_m': residual,
+                     'assumption': 'locally planar vertical surface'})
+    if len(fits) != 1:
+        return {'valid': False, 'reason': 'ambiguous or nonplanar LiDAR surface'}
+    return fits[0]
+
+
+def estimate_fusion(model, data, rgb, scan):
+    """Use calibrated sensor poses to transform LiDAR measurements into RGB frame."""
+    detection = detect_icon(rgb)
+    origin, directions, ranges, hits = scan
+    world_points = origin + directions[hits] * ranges[hits, None]
+    camera = model.camera('fixed_camera').id
+    optical_rotation = data.cam_xmat[camera].reshape(3, 3) @ np.diag([1, -1, -1])
+    points = (world_points - data.cam_xpos[camera]) @ optical_rotation
+    height, width = rgb.shape[:2]
+    result = fuse_depth(detection, points, width, height, model.cam_fovy[camera])
+    return detection, result
+
+
+def draw_marker_hud(model, data, width, height, context, detection=None, fusion=None):
+    pixel = detection['xy'] if detection is not None else None
     text = 'Marker: not visible' if pixel is None else f'Marker: x={pixel[0]:.1f}, y={pixel[1]:.1f} px'
     viewport = mujoco.MjrRect(0, 0, width, height)
     mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100,
                        mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport, text,
-                       'Origin: top-left | simulation projection', context)
+                       'Origin: top-left | RGB detection', context)
+    if fusion is not None:
+        depth_text = (f"Fusion Z={fusion['depth_z_m']:.3f} m | range={fusion['distance_m']:.3f} m | N={fusion['points']}"
+                      if fusion['valid'] else 'Fusion unavailable: ' + fusion['reason'])
+        mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,
+                           viewport, depth_text, 'Assumption: vertical planar surface', context)
     if pixel is not None:
         x, y = int(round(pixel[0])), height - 1 - int(round(pixel[1]))
         for dx, dy, w, h in [(-8, 0, 17, 1), (0, -8, 1, 17)]:
@@ -183,7 +274,7 @@ class CameraWindow:
         finally:
             glfw.make_context_current(previous)
 
-    def update(self, model, data, laser_range):
+    def update(self, model, data, laser_range, scan):
         glfw = self.glfw
         glfw.poll_events()
         if glfw.window_should_close(self.window) or glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
@@ -194,7 +285,10 @@ class CameraWindow:
             update_camera_scene(model, data, self.scene, self.camera, self.option, laser_range)
             width, height = glfw.get_framebuffer_size(self.window)
             mujoco.mjr_render(mujoco.MjrRect(0, 0, width, height), self.scene, self.context)
-            draw_marker_hud(model, data, width, height, self.context)
+            rgb = np.empty((height, width, 3), dtype=np.uint8)
+            mujoco.mjr_readPixels(rgb, None, mujoco.MjrRect(0, 0, width, height), self.context)
+            detection, fusion = estimate_fusion(model, data, rgb[::-1].copy(), scan)
+            draw_marker_hud(model, data, width, height, self.context, detection, fusion)
             glfw.swap_buffers(self.window)
         finally:
             glfw.make_context_current(previous)
@@ -252,12 +346,14 @@ def main():
             mujoco.mj_step(model, data)
         mujoco.mj_forward(model, data)
         result = scan()
-        pixel = marker_pixel(model, data)
-        (args.headless / 'marker.json').write_text(json.dumps({'visible': pixel is not None, 'xy': pixel, 'resolution': [640, 480], 'origin': 'top-left', 'source': 'simulation projection'}, indent=2))
         with mujoco.Renderer(model, height=480, width=640, max_geom=5000) as renderer:
             renderer.update_scene(data, camera='fixed_camera')
             draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))
-            save_frame(args.headless / 'camera.ppm', renderer.render())
+            rgb = renderer.render().copy()
+            detection, fusion = estimate_fusion(model, data, rgb, result)
+            (args.headless / 'marker.json').write_text(json.dumps({'visible': detection is not None, 'xy': detection['xy'] if detection else None, 'resolution': [640, 480], 'origin': 'top-left', 'source': 'RGB detection'}, indent=2))
+            (args.headless / 'fusion.json').write_text(json.dumps({'detection': detection, 'fusion': fusion}, indent=2))
+            save_frame(args.headless / 'camera.ppm', rgb)
             camera = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(camera)
             camera.lookat[:] = [1.1, 0, 0.1]
@@ -296,12 +392,13 @@ def main():
                 mujoco.mj_step(model, data)
                 accumulator -= model.opt.timestep
             mujoco.mj_forward(model, data)
+            scan_result = scan()
             with viewer.lock():
                 viewer.user_scn.ngeom = 0
-                draw_scan(viewer.user_scn, scan(), args.lidar_range)
+                draw_scan(viewer.user_scn, scan_result, args.lidar_range)
                 draw_laser(viewer.user_scn, cast_laser(model, data, args.laser_range))
             viewer.sync()
-            if camera_window is not None and not camera_window.update(model, data, args.laser_range):
+            if camera_window is not None and not camera_window.update(model, data, args.laser_range, scan_result):
                 camera_window.close()
                 camera_window = None
             time.sleep(max(0, 1 / 60 - (time.monotonic() - start)))

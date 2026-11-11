@@ -10,6 +10,28 @@ from test_sensors import ROOT, preview
 
 @unittest.skipUnless(os.environ.get('MUJOCO_GL') == 'egl', 'Requires EGL rendering')
 class CameraRenderTests(unittest.TestCase):
+    def test_rgb_lidar_fusion_tracks_depth_without_object_pose_input(self):
+        model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
+        data = mujoco.MjData(model)
+        with mujoco.Renderer(model, height=480, width=640, max_geom=5000) as renderer:
+            for x in [1.5, 1.9]:
+                data.joint('scan_target_center_joint').qpos[0] = x
+                mujoco.mj_forward(model, data)
+                renderer.update_scene(data, camera='fixed_camera')
+                preview.draw_laser(renderer.scene, preview.cast_laser(model, data))
+                rgb = renderer.render().copy()
+                # No marker site or object pose is passed into the fusion estimator.
+                detection, result = preview.estimate_fusion(model, data, rgb, preview.scan_lidar(model, data, max_range=3))
+                self.assertIsNotNone(detection)
+                self.assertTrue(result['valid'], result)
+                self.assertAlmostEqual(result['depth_z_m'], x-.08-.175, delta=.015)
+                preview.draw_marker_hud(model, data, 640, 480, renderer._mjr_context, detection, result)
+                scan = list(preview.scan_lidar(model, data))
+                scan[3] = np.zeros_like(scan[3])
+                _, missing = preview.estimate_fusion(model, data, rgb, scan)
+                self.assertFalse(missing['valid'])
+            self.assertIsNone(preview.detect_icon(np.zeros((480, 640, 3), dtype=np.uint8)))
+
     def test_live_scene_reflects_object_changes(self):
         model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
         data = mujoco.MjData(model)

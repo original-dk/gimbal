@@ -115,6 +115,20 @@ class SensorTests(unittest.TestCase):
         mujoco.mj_forward(self.model, self.data)
         self.assertIsNone(preview.marker_pixel(self.model, self.data))
 
+    def test_integer_max_range_preserves_fractional_returns(self):
+        origin, _, ranges, hits = preview.scan_lidar(self.model, self.data, max_range=3)
+        self.assertTrue(hits[60])
+        self.assertAlmostEqual(ranges[60], 1.42 - origin[0], places=8)
+        self.assertEqual(ranges.dtype.kind, 'f')
+
+    def test_fusion_rejects_missing_and_nonplanar_data(self):
+        detection = {'xy': [320, 168], 'bbox': [308, 156, 24, 24]}
+        self.assertFalse(preview.fuse_depth(None, np.empty((0, 3)), 640, 480, 60)['valid'])
+        self.assertFalse(preview.fuse_depth(detection, np.empty((0, 3)), 640, 480, 60)['valid'])
+        # Degenerate coincident returns cannot define a plane.
+        points = np.tile([0, -.055, 1.2], (5, 1))
+        self.assertFalse(preview.fuse_depth(detection, points, 640, 480, 60)['valid'])
+
     def test_visualization_contains_range_and_returns(self):
         scene = mujoco.MjvScene(self.model, maxgeom=5000)
         preview.draw_scan(scene, preview.scan_lidar(self.model, self.data), 3)

@@ -42,7 +42,7 @@ Change the body positions, geom sizes, joint axes/ranges, camera position and li
 ## Install and run
 
 ```bash
-pip install mujoco
+pip install mujoco numpy opencv-python-headless
 python scripts/preview_mujoco.py --yaw 20 --pitch 10
 ```
 
@@ -124,8 +124,8 @@ to rendering performance. Press Esc while this window has focus, or close it,
 to dismiss only the RGB window. Closing the main viewer exits the program and
 cleans up both windows. `--no-camera-window` disables the extra window;
 `--camera` still switches the main viewer to the sensor perspective.
-No OpenCV installation is required: both windows use GLFW, already supplied
-with MuJoCo. A working desktop/OpenGL display is required for interactive mode.
+Both windows use GLFW. RGB icon detection additionally requires
+`opencv-python-headless` (no OpenCV GUI backend is needed). A working desktop/OpenGL display is required for interactive mode.
 `MUJOCO_GL=egl --headless ...` remains the separate export workflow.
 
 To verify the RGB rendering and scene updates without a desktop:
@@ -168,11 +168,45 @@ is 640×480; OS DPI can scale the framebuffer. Move the central red box in the
 main viewer to watch its coordinates change. The icon itself appears in both
 windows; the coordinate HUD is shown only in the independent RGB window.
 
-The center is marked `not visible` if outside the camera/clipping range,
-back-facing, or occluded at its center. This tracks a known simulation site via
-camera projection and a visibility ray, rather than detecting the icon in RGB
-pixels. It therefore provides exact simulation coordinates, not image-based
-recognition confidence. Partial visibility is judged at the center only.
+The live center is detected from RGB pixels using the white square and black
+cross pattern, rather than reading the marker's simulation site. Missing or
+ambiguous detections show `not visible`. Detection is a simple pattern heuristic,
+not a general marker tracker: small, severely rotated, occluded or poorly lit
+icons may not be detected. The `marker_pixel` projection helper remains for
+simulation verification only; it is not used for live detection or depth.
 Icon geometry is visual-only and excluded from laser/LiDAR ranging.
 Headless exports additionally include `marker.json` with visibility, XY,
 resolution and coordinate convention; the exported RGB image has no HUD.
+
+## RGB + LiDAR fused depth
+
+Install dependencies with `pip install -e .` or the installation command above.
+The normal two-window preview now shows `Fusion Z=... m | range=... m | N=...`
+in the RGB window. Z is camera optical-axis depth; range is straight-line distance
+from the camera to the inferred label center. `N` is the fitted LiDAR hit count.
+
+The camera FOV/resolution define pinhole intrinsics. The fixed camera and LiDAR
+installation poses define ideal simulation extrinsics; these are known model
+calibration, not a calibration procedure estimated from measurements. RGB pattern
+detection supplies the label pixel. LiDAR hits are transformed into optical camera
+coordinates, associated by projected horizontal position, split at discontinuities,
+and fitted to a local vertical plane. The camera ray through the detected label
+intersects this plane to estimate depth. No object identity, tag world position,
+true depth, or true object pose is used to fill the estimate.
+
+**Single-layer limitation:** the scan is below the label, so this extrapolates a
+vertically planar surface from its horizontal cross-section. Tilting the object,
+curved surfaces, partial occlusion or a different object at the same image column
+can bias the result or cause a wrong association. A small fit residual does not
+prove this assumption. The estimator rejects missing detections, insufficient
+returns, degenerate/nonlinear fits and multiple candidate surfaces; it cannot
+detect every incorrect association or out-of-plane tilt. Use a multilayer LiDAR
+or additional visual plane constraints if arbitrary 3D motion must be supported.
+
+Headless runs export `fusion.json` with detection, validity, metric estimates,
+fit count/residual or failure reason. `marker.json` now also uses RGB detection.
+To test actual rendering, icon detection and depth changes:
+
+```bash
+MUJOCO_GL=egl python -m unittest discover -s tests -v
+```
