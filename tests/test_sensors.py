@@ -24,7 +24,8 @@ class SensorTests(unittest.TestCase):
         rotation = self.data.cam_xmat[camera].copy()
         lidar = self.data.site_xpos[site].copy()
         np.testing.assert_allclose(-rotation.reshape(3, 3)[:, 2], [1, 0, 0], atol=1e-12)
-        self.data.qpos[:] = [1, .4]
+        self.data.joint('yaw_joint').qpos[0] = 1
+        self.data.joint('pitch_joint').qpos[0] = .4
         mujoco.mj_forward(self.model, self.data)
         np.testing.assert_allclose(self.data.cam_xpos[camera], position)
         np.testing.assert_allclose(self.data.cam_xmat[camera], rotation)
@@ -49,7 +50,8 @@ class SensorTests(unittest.TestCase):
         _, short_endpoint, hit = preview.cast_laser(self.model, self.data, .1)
         self.assertFalse(hit)
         self.assertAlmostEqual(np.linalg.norm(short_endpoint - origin), .1)
-        self.data.qpos[:] = [np.pi / 2, 0]
+        self.data.joint('yaw_joint').qpos[0] = np.pi / 2
+        self.data.joint('pitch_joint').qpos[0] = 0
         mujoco.mj_forward(self.model, self.data)
         origin, endpoint, hit = preview.cast_laser(self.model, self.data)
         self.assertFalse(hit)
@@ -61,12 +63,29 @@ class SensorTests(unittest.TestCase):
         for _ in range(2500):
             preview.startup_control(self.data, target, 1.5)
             mujoco.mj_step(self.model, self.data)
-            samples.append(self.data.qpos.copy())
+            samples.append([self.data.joint('yaw_joint').qpos[0], self.data.joint('pitch_joint').qpos[0]])
         samples = np.array(samples)
         self.assertTrue(np.isfinite(samples).all())
         self.assertLess(np.max(np.diff(samples[:, 0])), .002)
         self.assertLess(samples[:, 0].max(), target[0] + .001)
         np.testing.assert_allclose(samples[-1], target, atol=.01)
+
+    def test_objects_have_free_joints_and_respond_to_forces(self):
+        body = self.model.body('scan_target_center_body').id
+        joint = self.model.joint('scan_target_center_joint').id
+        self.assertEqual(self.model.jnt_type[joint], mujoco.mjtJoint.mjJNT_FREE)
+        start_y = self.data.joint('scan_target_center_joint').qpos[1]
+        self.data.xfrc_applied[body, 1] = 15
+        for _ in range(250):
+            mujoco.mj_step(self.model, self.data)
+        self.assertGreater(self.data.joint('scan_target_center_joint').qpos[1], start_y + .05)
+        self.data.xfrc_applied[:] = 0
+        for _ in range(750):
+            mujoco.mj_step(self.model, self.data)
+        self.assertTrue(np.isfinite(self.data.qpos).all())
+        for name in ['scan_target_center', 'scan_target_left', 'near_sphere',
+                     'middle_cylinder', 'far_box', 'far_sphere', 'far_column']:
+            self.assertGreater(self.data.joint(name + '_joint').qpos[2], .05)
 
     def test_visualization_contains_range_and_returns(self):
         scene = mujoco.MjvScene(self.model, maxgeom=5000)

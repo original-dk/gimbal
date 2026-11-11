@@ -29,7 +29,7 @@ class CameraRenderTests(unittest.TestCase):
             observer.distance = 10
             np.testing.assert_array_equal(first, frame())
             # Move the visible center obstacle, mimicking a changed simulation scene.
-            model.geom_pos[model.geom('scan_target_center').id, 1] += .4
+            data.joint('scan_target_center_joint').qpos[1] += .4
             mujoco.mj_forward(model, data)
             second = frame()
             self.assertEqual(second.shape, (480, 640, 3))

@@ -50,7 +50,7 @@ Run from this project directory so the default XML path resolves.
 
 ## Notes
 
-- Geometries are currently visual-only (`contype=0`, `conaffinity=0`) to keep this first model simple and avoid self-collision complications.
+- Device geometry remains visual-only. The seven movable targets collide with each other and the ground.
 - The preview casts a laser ray from `laser_origin` along its moving +X axis. The red beam stops at the nearest environment surface and shows a red hit spot.
 - The preview implements a planar LiDAR using `mj_ray`. It models geometric ranges, not radar Doppler, reflectivity, noise or material effects.
 - The 16x16 grid is best drawn as an image overlay initially, rather than as a collidable transparent object.
@@ -62,7 +62,7 @@ Both sensors are mounted at the front of the base and do not rotate with yaw or
 pitch. Camera vertical FOV is 60 degrees. LiDAR defaults to a 120-degree
 horizontal fan, 3 m maximum range and 121 rays at the sensor height. The cyan
 outline shows the full sensing region, green rays stop at hits, and red marks
-show returns. Seven colored boxes, spheres and cylinders at different distances demonstrate
+show returns. Seven movable colored boxes, spheres and cylinders at different distances demonstrate
 depth, occlusion and ranging. A checkerboard floor provides perspective cues.
 
 ```bash
@@ -133,3 +133,20 @@ To verify the RGB rendering and scene updates without a desktop:
 ```bash
 MUJOCO_GL=egl python -m unittest discover -s tests -v
 ```
+
+## Select and move objects
+
+The seven front objects are independent 1 kg bodies with free joints and ground
+collision. They can translate/rotate, fall, roll and tip under mouse forces;
+they are no longer static world geometry. The base and sensor module stay fixed.
+
+Use the **main MuJoCo viewer**, not the RGB window:
+
+1. Double-click the left mouse button on an object to select its body.
+2. Hold Ctrl and drag with the right mouse button to translate/apply a force.
+3. Hold Ctrl and drag with the left mouse button to rotate/apply a torque.
+4. Add Shift to switch the movement/rotation plane.
+
+With simulation running, manipulation applies forces; heavy objects may resist
+movement because of ground friction. The RGB window is display-only and updates
+as objects move. Orbiting the main view does not change the fixed sensor pose.
