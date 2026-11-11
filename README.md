@@ -321,3 +321,16 @@ Tests exercise rendered yaw 50°, pitch 45°, and in-plane rotation 60°, includ
 depth fusion. These are tested cases, not guaranteed angular operating limits.
 Near edge-on views, full occlusion or insufficient point-cloud support still
 produce unavailable results; the aiming controller then holds its command.
+
+## Browser experience (MuJoCo 4.0)
+
+The `feature/web-viewer` branch adds Studio WebViewer with a dockable RGB/fusion
+panel, 3D LiDAR overlays and automatic laser aiming:
+
+```bash
+python scripts/web_viewer.py --port 8080
+```
+
+See [local browser preview](docs/web-viewer.md) for setup and multi-viewer
+limitations. The existing
+`preview_mujoco.py` desktop workflow remains available.
