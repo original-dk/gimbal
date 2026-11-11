@@ -10,6 +10,11 @@ import time
 import mujoco
 import numpy as np
 
+if __package__:
+    from .aiming import AutoAim
+else:
+    from aiming import AutoAim
+
 
 @lru_cache(maxsize=16)
 def lidar_directions(fov, rays, vertical_fov, layers):
@@ -330,7 +335,6 @@ class CameraWindow:
         self.window = None
         self.context = None
         self.width, self.height = width, height
-        self.measurement = (None, None)
         previous = glfw.get_current_context()
         if not glfw.init():
             raise RuntimeError('Cannot initialize camera display. Start a graphical desktop and check DISPLAY.')
@@ -354,7 +358,7 @@ class CameraWindow:
         finally:
             glfw.make_context_current(previous)
 
-    def update(self, model, data, laser_range, scan, fresh_scan=True):
+    def update(self, model, data, laser_range, measurement, aim_status=None):
         glfw = self.glfw
         glfw.poll_events()
         if glfw.window_should_close(self.window) or glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
@@ -365,12 +369,11 @@ class CameraWindow:
             update_camera_scene(model, data, self.scene, self.camera, self.option, laser_range)
             width, height = glfw.get_framebuffer_size(self.window)
             mujoco.mjr_render(mujoco.MjrRect(0, 0, width, height), self.scene, self.context)
-            if fresh_scan:
-                rgb = np.empty((height, width, 3), dtype=np.uint8)
-                mujoco.mjr_readPixels(rgb, None, mujoco.MjrRect(0, 0, width, height), self.context)
-                self.measurement = estimate_fusion(model, data, rgb[::-1].copy(), scan)
-            detection, fusion = self.measurement
+            detection, fusion = measurement
             draw_marker_hud(model, data, width, height, self.context, detection, fusion)
+            if aim_status is not None:
+                mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPRIGHT,
+                                   mujoco.MjrRect(0, 0, width, height), 'Auto aim: '+aim_status, '', self.context)
             glfw.swap_buffers(self.window)
         finally:
             glfw.make_context_current(previous)
@@ -399,8 +402,8 @@ def save_frame(path, pixels):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--xml', default='assets/simple_pan_tilt_gimbal.xml')
-    parser.add_argument('--yaw', type=float, default=0)
-    parser.add_argument('--pitch', type=float, default=0)
+    parser.add_argument('--yaw', type=float, default=0, help='Manual yaw target in degrees')
+    parser.add_argument('--pitch', type=float, default=0, help='Manual pitch target in degrees')
     parser.add_argument('--lidar-fov', type=float, default=120, help='Horizontal degrees')
     parser.add_argument('--lidar-range', type=float, default=3, help='Maximum meters')
     parser.add_argument('--lidar-rays', type=int, default=121, help='Beams per vertical layer')
@@ -410,6 +413,7 @@ def main():
     parser.add_argument('--laser-range', type=float, default=10, help='Laser maximum meters')
     parser.add_argument('--move-duration', type=float, default=1.5, help='Startup motion duration in seconds')
     parser.add_argument('--no-camera-window', action='store_true', help='Disable the separate live RGB window')
+    parser.add_argument('--manual', action='store_true', help='Disable automatic aiming; use yaw/pitch targets')
     parser.add_argument('--camera', action='store_true', help='View through fixed front camera')
     parser.add_argument('--headless', type=Path, help='Write camera.ppm, lidar.ppm and scan.npz to directory; use MUJOCO_GL=egl')
     args = parser.parse_args()
@@ -423,23 +427,39 @@ def main():
     data = mujoco.MjData(model)
     target = np.clip(np.deg2rad([args.yaw, args.pitch]), model.actuator_ctrlrange[:, 0], model.actuator_ctrlrange[:, 1])
 
+    mujoco.mj_forward(model, data)
+    aiming = None if args.manual else AutoAim(model, data)
+    print('Manual angle control' if args.manual else 'Auto aim enabled: yaw/pitch targets are ignored; use --manual for angle control.')
+
     def scan():
         return scan_lidar(model, data, args.lidar_fov, args.lidar_range, args.lidar_rays, args.lidar_vfov, args.lidar_layers)
 
     if args.headless:
         args.headless.mkdir(parents=True, exist_ok=True)
-        for _ in range(int((args.move_duration + 3.5) / model.opt.timestep)):
-            startup_control(data, target, args.move_duration)
-            mujoco.mj_step(model, data)
-        mujoco.mj_forward(model, data)
-        result = scan()
         with mujoco.Renderer(model, height=480, width=640, max_geom=5000) as renderer:
+            next_scan = 0.0
+            for _ in range(int((args.move_duration + 3.5)/model.opt.timestep)):
+                if aiming is not None:
+                    aiming.step(data)
+                else:
+                    startup_control(data, target, args.move_duration)
+                mujoco.mj_step(model, data)
+                if data.time >= next_scan:
+                    mujoco.mj_forward(model, data)
+                    result = scan()
+                    renderer.update_scene(data, camera='fixed_camera')
+                    measurement = estimate_fusion(model, data, renderer.render().copy(), result)
+                    if aiming is not None:
+                        aiming.observe(data, measurement[1])
+                    next_scan = data.time + 1/args.lidar_hz
+            mujoco.mj_forward(model, data)
+            result = scan()
             renderer.update_scene(data, camera='fixed_camera')
             draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))
             rgb = renderer.render().copy()
             detection, fusion = estimate_fusion(model, data, rgb, result)
             (args.headless / 'marker.json').write_text(json.dumps({'visible': detection is not None, 'xy': detection['xy'] if detection else None, 'resolution': [640, 480], 'origin': 'top-left', 'source': 'RGB detection'}, indent=2))
-            (args.headless / 'fusion.json').write_text(json.dumps({'detection': detection, 'fusion': fusion}, indent=2))
+            (args.headless / 'fusion.json').write_text(json.dumps({'detection': detection, 'fusion': fusion, 'aim_status': aiming.status if aiming else 'manual'}, indent=2))
             save_frame(args.headless / 'camera.ppm', rgb)
             camera = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(camera)
@@ -455,6 +475,8 @@ def main():
 
     from mujoco import viewer as mj_viewer
     with ExitStack() as stack:
+        sensor_renderer = stack.enter_context(mujoco.Renderer(model, height=480, width=640, max_geom=5000))
+        measurement = (None, None)
         viewer = stack.enter_context(mj_viewer.launch_passive(model, data))
         camera_window = None
         if not args.no_camera_window:
@@ -465,7 +487,7 @@ def main():
             with viewer.lock():
                 viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
                 viewer.cam.fixedcamid = model.camera('fixed_camera').id
-        # Physics runs at 500 Hz; expensive ray casting and viewer sync run at 60 Hz.
+        # Physics: 500 Hz. Sensing/control targets: lidar-hz. Display: about 60 Hz.
         # Accumulate wall time so drawing cost does not slow the simulated motors.
         previous = time.monotonic()
         accumulator = 0.0
@@ -476,7 +498,9 @@ def main():
             accumulator += min(start - previous, 0.1)
             previous = start
             while accumulator >= model.opt.timestep:
-                if data.time <= args.move_duration + model.opt.timestep:
+                if aiming is not None:
+                    aiming.step(data)
+                elif data.time <= args.move_duration + model.opt.timestep:
                     startup_control(data, target, args.move_duration)
                 mujoco.mj_step(model, data)
                 accumulator -= model.opt.timestep
@@ -484,13 +508,17 @@ def main():
             fresh_scan = start >= next_scan
             if fresh_scan:
                 scan_result = scan()
+                sensor_renderer.update_scene(data, camera='fixed_camera')
+                measurement = estimate_fusion(model, data, sensor_renderer.render().copy(), scan_result)
+                if aiming is not None:
+                    aiming.observe(data, measurement[1])
                 next_scan = start + 1 / args.lidar_hz
             with viewer.lock():
                 viewer.user_scn.ngeom = 0
                 draw_scan(viewer.user_scn, scan_result, args.lidar_range, args.lidar_layers)
                 draw_laser(viewer.user_scn, cast_laser(model, data, args.laser_range))
             viewer.sync()
-            if camera_window is not None and not camera_window.update(model, data, args.laser_range, scan_result, fresh_scan):
+            if camera_window is not None and not camera_window.update(model, data, args.laser_range, measurement, aiming.status if aiming else None):
                 camera_window.close()
                 camera_window = None
             time.sleep(max(0, 1 / 60 - (time.monotonic() - start)))

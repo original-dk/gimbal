@@ -86,23 +86,23 @@ The interactive camera mode shows this overlay; the exported RGB image includes 
 
 ## Laser and smooth motion
 
-The default yaw/pitch targets are now 0/0 degrees so the laser hits the center
-object. `--laser-range 10` controls maximum beam length in meters. No hit means
+Automatic aiming is enabled by default; manual yaw/pitch targets default to
+0/0 degrees when using `--manual`. `--laser-range 10` controls maximum beam length in meters. No hit means
 a full-length beam without a spot. The laser shares LiDAR's environment group
 filter and excludes the device itself. Beam and spot are visual overlays, not
 physical lighting or material effects.
 
 ```bash
 python scripts/preview_mujoco.py --camera --yaw 0 --pitch 0
-python scripts/preview_mujoco.py --yaw 20 --pitch 10 --move-duration 1.5
+python scripts/preview_mujoco.py --manual --yaw 20 --pitch 10 --move-duration 1.5
 ```
 
-Startup commands use a smooth quintic trajectory; position actuators have damping
+Manual startup commands use a smooth quintic trajectory; position actuators have damping
 ratio 1 to reduce ringing. Physics retains its 2 ms step, scans and RGB fusion update at 15 Hz, and drawing
 updates at approximately 60 Hz. This avoids performing all ray casts and viewer
 synchronization at every physics step. Long stalls are limited to 100 ms of
 catch-up to keep the UI responsive; sustained overload can still slow simulation.
-Viewer actuator sliders remain available after the startup trajectory completes;
+In manual mode, viewer actuator sliders remain available after the startup trajectory completes;
 manual slider jumps are direct targets and do not use the startup easing.
 
 ## Separate live RGB window
@@ -264,3 +264,33 @@ Valid live fusion results and `fusion.json` now include `point_camera_m` and
 `point_world_m`; the RGB HUD also shows world XYZ. Invalid fusion results do not
 produce coordinates. Measurement, association and calibration errors propagate
 into XYZ: these are estimated coordinates, not corrected true positions.
+
+## Automatic laser aiming (default)
+
+```bash
+# Detect the icon, fuse depth, reconstruct the target and smoothly aim the laser
+python scripts/preview_mujoco.py
+# Original explicit angle behavior
+python scripts/preview_mujoco.py --manual --yaw 20 --pitch 10
+```
+
+Automatic mode consumes only valid fusion `point_world_m` measurements. The
+`--yaw`, `--pitch` and `--move-duration` options apply to manual mode. Numerical
+inverse kinematics uses the emitter's local +X axis and full model kinematics,
+including yaw/pitch pivot and aperture offsets; it does not query the true icon
+pose. The calculation/controller lives in `scripts/aiming.py`. Commands are
+limited to 60 degrees/s and 180 degrees/s² with joint/actuator limits, servo
+damping and gravity compensation. The independent RGB HUD shows aiming status.
+
+Targets refresh with sensing at 15 Hz; motor commands update every physics step.
+Invalid, lost, unreachable or stale (>0.25 s simulation time) measurements stop
+target pursuit and hold the current commanded angle. Valid measurements reacquire
+automatically. Fusion/recognition errors propagate into the aim; this is not a
+path planner and an intervening object can intercept the laser. Manual control
+sliders should be used only with `--manual`, since auto mode owns motor commands.
+
+Sensing uses a dedicated 640×480 offscreen camera renderer, so closing/disabling
+the RGB display does not stop automatic aiming. The display and sensor capture
+share the fixed camera calibration; display DPI does not affect the control
+measurement. The sensing image excludes visualization overlays. Headless mode
+runs the same RGB + 3D LiDAR + control loop and exports final aiming status.

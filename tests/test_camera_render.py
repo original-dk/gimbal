@@ -48,6 +48,32 @@ class CameraRenderTests(unittest.TestCase):
             truth = data.site_xpos[model.site('target_icon_center').id][0] - data.cam_xpos[0][0]
             self.assertAlmostEqual(result['depth_z_m'], truth, delta=.015)
 
+    def test_auto_aim_from_rgb_and_lidar_hits_marker(self):
+        model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
+        data = mujoco.MjData(model)
+        data.joint('yaw_joint').qpos[0] = np.deg2rad(20)
+        data.joint('pitch_joint').qpos[0] = np.deg2rad(10)
+        mujoco.mj_forward(model, data)
+        aim = preview.AutoAim(model, data)
+        with mujoco.Renderer(model, height=480, width=640) as renderer:
+            for index in range(2000):
+                if index == 1000:
+                    data.joint('scan_target_center_joint').qpos[:2] += [.2, .15]
+                    data.joint('scan_target_center_joint').qvel[:] = 0
+                if index % 34 == 0:
+                    mujoco.mj_forward(model, data)
+                    renderer.update_scene(data, camera='fixed_camera')
+                    _, fusion = preview.estimate_fusion(model, data, renderer.render().copy(), preview.scan_lidar(model, data))
+                    aim.observe(data, fusion)
+                aim.step(data)
+                mujoco.mj_step(model, data)
+        mujoco.mj_forward(model, data)
+        _, endpoint, hit = preview.cast_laser(model, data)
+        self.assertTrue(hit)
+        marker = data.site_xpos[model.site('target_icon_center').id]
+        self.assertLess(np.linalg.norm(endpoint-marker), .012)
+        self.assertEqual(aim.status, 'tracking')
+
     def test_live_scene_reflects_object_changes(self):
         model = mujoco.MjModel.from_xml_path(str(ROOT / 'assets/simple_pan_tilt_gimbal.xml'))
         data = mujoco.MjData(model)
