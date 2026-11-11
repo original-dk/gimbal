@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fixed RGB camera and planar LiDAR preview for the pan/tilt gimbal."""
 import argparse
+import json
 from contextlib import ExitStack
 from pathlib import Path
 import time
@@ -106,6 +107,51 @@ def update_camera_scene(model, data, scene, camera, option, laser_range):
     draw_laser(scene, cast_laser(model, data, laser_range))
 
 
+def marker_pixel(model, data, width=640, height=480):
+    """Project the attached marker center; return None if outside/occluded/back-facing.
+
+    Uses simulation ground truth, not image recognition. Pixel origin: top-left.
+    """
+    camera = model.camera('fixed_camera').id
+    site = model.site('target_icon_center').id
+    point = data.site_xpos[site]
+    origin = data.cam_xpos[camera]
+    body = model.site_bodyid[site]
+    front_normal = -data.xmat[body].reshape(3, 3)[:, 0]
+    if np.dot(front_normal, origin - point) <= 0:
+        return None
+    local = data.cam_xmat[camera].reshape(3, 3).T @ (point - origin)
+    depth = -local[2]
+    if not model.vis.map.znear * model.stat.extent < depth < model.vis.map.zfar * model.stat.extent:
+        return None
+    focal = height / (2 * np.tan(np.deg2rad(model.cam_fovy[camera]) / 2))
+    x = width / 2 + focal * local[0] / depth
+    y = height / 2 - focal * local[1] / depth
+    if not (0 <= x < width and 0 <= y < height):
+        return None
+    direction = point - origin
+    distance = np.linalg.norm(direction)
+    geom_id = np.array([-1], dtype=np.int32)
+    nearest = mujoco.mj_ray(model, data, origin, direction / distance,
+                            np.array([1, 1, 0, 0, 0, 0], dtype=np.uint8), 1, -1, geom_id)
+    if 0 <= nearest < distance - .002:
+        return None
+    return float(x), float(y)
+
+
+def draw_marker_hud(model, data, width, height, context):
+    pixel = marker_pixel(model, data, width, height)
+    text = 'Marker: not visible' if pixel is None else f'Marker: x={pixel[0]:.1f}, y={pixel[1]:.1f} px'
+    viewport = mujoco.MjrRect(0, 0, width, height)
+    mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100,
+                       mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport, text,
+                       'Origin: top-left | simulation projection', context)
+    if pixel is not None:
+        x, y = int(round(pixel[0])), height - 1 - int(round(pixel[1]))
+        for dx, dy, w, h in [(-8, 0, 17, 1), (0, -8, 1, 17)]:
+            mujoco.mjr_rectangle(mujoco.MjrRect(x + dx, y + dy, w, h), 0, 1, 0, 1)
+
+
 class CameraWindow:
     """A separate GLFW window rendering the actual fixed-camera perspective."""
     def __init__(self, model, width=640, height=480):
@@ -148,6 +194,7 @@ class CameraWindow:
             update_camera_scene(model, data, self.scene, self.camera, self.option, laser_range)
             width, height = glfw.get_framebuffer_size(self.window)
             mujoco.mjr_render(mujoco.MjrRect(0, 0, width, height), self.scene, self.context)
+            draw_marker_hud(model, data, width, height, self.context)
             glfw.swap_buffers(self.window)
         finally:
             glfw.make_context_current(previous)
@@ -205,6 +252,8 @@ def main():
             mujoco.mj_step(model, data)
         mujoco.mj_forward(model, data)
         result = scan()
+        pixel = marker_pixel(model, data)
+        (args.headless / 'marker.json').write_text(json.dumps({'visible': pixel is not None, 'xy': pixel, 'resolution': [640, 480], 'origin': 'top-left', 'source': 'simulation projection'}, indent=2))
         with mujoco.Renderer(model, height=480, width=640, max_geom=5000) as renderer:
             renderer.update_scene(data, camera='fixed_camera')
             draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))

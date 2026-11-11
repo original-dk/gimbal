@@ -28,6 +28,16 @@
     <!-- Movable targets at multiple depths, all detectable by LiDAR. -->
     <body name="scan_target_center_body" pos="1.5 0 0.25">
       <freejoint name="scan_target_center_joint"/>
+      <!-- White square with a black cross, attached to the front (-X) face. -->
+      <geom name="target_icon" group="2" type="box" pos="-0.0815 0 0.08"
+            size="0.001 0.035 0.035" mass="0" rgba="1 1 1 1"/>
+      <geom name="target_icon_horizontal" group="2" type="box" pos="-0.083 0 0.08"
+            size="0.0005 0.025 0.006" mass="0" rgba="0.02 0.02 0.02 1"/>
+      <geom name="target_icon_vertical" group="2" type="box" pos="-0.083 0 0.08"
+            size="0.0005 0.006 0.025" mass="0" rgba="0.02 0.02 0.02 1"/>
+      <site name="target_icon_center" pos="-0.084 0 0.08" size="0.001"
+            rgba="0 0 0 0"/>
+
       <geom name="scan_target_center" group="0" contype="1" conaffinity="1" mass="1" type="box"
           size="0.08 0.10 0.25" rgba="0.85 0.28 0.16 1"/>
     </body>

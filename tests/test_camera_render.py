@@ -23,6 +23,8 @@ class CameraRenderTests(unittest.TestCase):
                 preview.update_camera_scene(model, data, renderer.scene, camera, option, 10)
                 return renderer.render().copy()
             first = frame()
+            # Exercise the native HUD drawing calls in a real EGL context.
+            preview.draw_marker_hud(model, data, 640, 480, renderer._mjr_context)
             # A change to the main observer's camera cannot affect the sensor camera.
             observer = mujoco.MjvCamera()
             observer.azimuth = 180

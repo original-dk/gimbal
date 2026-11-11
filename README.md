@@ -150,3 +150,29 @@ Use the **main MuJoCo viewer**, not the RGB window:
 With simulation running, manipulation applies forces; heavy objects may resist
 movement because of ground friction. The RGB window is display-only and updates
 as objects move. Orbiting the main view does not change the fixed sensor pose.
+
+## Attached icon and live pixel coordinates
+
+The front (-X) face of the central red box has a white square/black-cross icon.
+Its geometry and `target_icon_center` site belong to the movable body's local
+frame, so both follow translation and rotation. Run the usual preview command:
+
+```bash
+python scripts/preview_mujoco.py --yaw 20 --pitch 10
+```
+
+The independent RGB window overlays a green crosshair on the icon center and
+shows `Marker: x=..., y=... px`. Coordinates use the rendered framebuffer:
+origin at the top-left, X increases right, Y increases down. Typical resolution
+is 640×480; OS DPI can scale the framebuffer. Move the central red box in the
+main viewer to watch its coordinates change. The icon itself appears in both
+windows; the coordinate HUD is shown only in the independent RGB window.
+
+The center is marked `not visible` if outside the camera/clipping range,
+back-facing, or occluded at its center. This tracks a known simulation site via
+camera projection and a visibility ray, rather than detecting the icon in RGB
+pixels. It therefore provides exact simulation coordinates, not image-based
+recognition confidence. Partial visibility is judged at the center only.
+Icon geometry is visual-only and excluded from laser/LiDAR ranging.
+Headless exports additionally include `marker.json` with visibility, XY,
+resolution and coordinate convention; the exported RGB image has no HUD.

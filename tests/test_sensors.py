@@ -87,6 +87,34 @@ class SensorTests(unittest.TestCase):
                      'middle_cylinder', 'far_box', 'far_sphere', 'far_column']:
             self.assertGreater(self.data.joint(name + '_joint').qpos[2], .05)
 
+    def test_marker_pixels_follow_object_and_hide_when_invisible(self):
+        xy = preview.marker_pixel(self.model, self.data)
+        self.assertIsNotNone(xy)
+        self.assertAlmostEqual(xy[0], 320)
+        joint = self.data.joint('scan_target_center_joint')
+        joint.qpos[1] += .2
+        mujoco.mj_forward(self.model, self.data)
+        moved = preview.marker_pixel(self.model, self.data)
+        self.assertIsNotNone(moved)
+        self.assertLess(moved[0], xy[0])
+        joint.qpos[2] += .1
+        mujoco.mj_forward(self.model, self.data)
+        self.assertLess(preview.marker_pixel(self.model, self.data)[1], moved[1])
+        joint.qpos[1] = 10
+        mujoco.mj_forward(self.model, self.data)
+        self.assertIsNone(preview.marker_pixel(self.model, self.data))
+        joint.qpos[1] = 0
+        joint.qpos[3:7] = [0, 0, 0, 1]
+        mujoco.mj_forward(self.model, self.data)
+        self.assertIsNone(preview.marker_pixel(self.model, self.data))
+
+    def test_marker_occlusion(self):
+        self.assertIsNotNone(preview.marker_pixel(self.model, self.data))
+        # Place another body between camera and marker center.
+        self.data.joint('scan_target_left_joint').qpos[:3] = [1, 0, .25]
+        mujoco.mj_forward(self.model, self.data)
+        self.assertIsNone(preview.marker_pixel(self.model, self.data))
+
     def test_visualization_contains_range_and_returns(self):
         scene = mujoco.MjvScene(self.model, maxgeom=5000)
         preview.draw_scan(scene, preview.scan_lidar(self.model, self.data), 3)
