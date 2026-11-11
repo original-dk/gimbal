@@ -41,6 +41,33 @@ class SensorTests(unittest.TestCase):
         self.assertFalse(hits.any())
         np.testing.assert_allclose(ranges, .5)
 
+    def test_laser_nearest_surface_and_moving_direction(self):
+        origin, endpoint, hit = preview.cast_laser(self.model, self.data)
+        self.assertTrue(hit)
+        self.assertAlmostEqual(endpoint[0], 1.42, places=8)
+        self.assertAlmostEqual(endpoint[1], 0, places=8)
+        _, short_endpoint, hit = preview.cast_laser(self.model, self.data, .1)
+        self.assertFalse(hit)
+        self.assertAlmostEqual(np.linalg.norm(short_endpoint - origin), .1)
+        self.data.qpos[:] = [np.pi / 2, 0]
+        mujoco.mj_forward(self.model, self.data)
+        origin, endpoint, hit = preview.cast_laser(self.model, self.data)
+        self.assertFalse(hit)
+        np.testing.assert_allclose((endpoint - origin) / 10, [0, 1, 0], atol=1e-12)
+
+    def test_smooth_startup_and_motor_settling(self):
+        target = np.deg2rad([20, 10])
+        samples = []
+        for _ in range(2500):
+            preview.startup_control(self.data, target, 1.5)
+            mujoco.mj_step(self.model, self.data)
+            samples.append(self.data.qpos.copy())
+        samples = np.array(samples)
+        self.assertTrue(np.isfinite(samples).all())
+        self.assertLess(np.max(np.diff(samples[:, 0])), .002)
+        self.assertLess(samples[:, 0].max(), target[0] + .001)
+        np.testing.assert_allclose(samples[-1], target, atol=.01)
+
     def test_visualization_contains_range_and_returns(self):
         scene = mujoco.MjvScene(self.model, maxgeom=5000)
         preview.draw_scan(scene, preview.scan_lidar(self.model, self.data), 3)

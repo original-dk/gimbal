@@ -129,11 +129,11 @@
   <actuator>
     <position name="yaw_position"
               joint="yaw_joint"
-              kp="35"
+              kp="35" dampratio="1"
               ctrlrange="-3.14159265 3.14159265"/>
     <position name="pitch_position"
               joint="pitch_joint"
-              kp="35"
+              kp="35" dampratio="1"
               ctrlrange="-0.785398 0.785398"/>
   </actuator>
 

@@ -56,6 +56,48 @@ def draw_scan(scene, scan, max_range):
             line(endpoint - [0, 0, 0.008], endpoint + [0, 0, 0.008], [1, 0.1, 0.1, 1], 4)
 
 
+def cast_laser(model, data, max_range=10.0):
+    """Cast local +X from the moving aperture to the nearest environment surface."""
+    site = model.site('laser_origin').id
+    origin = data.site_xpos[site].copy()
+    direction = data.site_xmat[site].reshape(3, 3)[:, 0].copy()
+    geom_id = np.array([-1], dtype=np.int32)
+    distance = mujoco.mj_ray(model, data, origin, direction,
+                             np.array([1, 0, 0, 0, 0, 0], dtype=np.uint8),
+                             1, -1, geom_id)
+    hit = 0 <= distance <= max_range
+    endpoint = origin + direction * (distance if hit else max_range)
+    return origin, endpoint, hit
+
+
+def draw_laser(scene, laser):
+    origin, endpoint, hit = laser
+    if scene.ngeom + 2 > scene.maxgeom:
+        raise RuntimeError('Laser visualization exceeds scene capacity')
+    beam = scene.geoms[scene.ngeom]
+    mujoco.mjv_initGeom(beam, mujoco.mjtGeom.mjGEOM_LINE,
+                       np.zeros(3), np.zeros(3), np.eye(3).ravel(), [1, 0.02, 0.02, 1])
+    mujoco.mjv_connector(beam, mujoco.mjtGeom.mjGEOM_LINE, 2, origin, endpoint)
+    beam.emission = 1
+    scene.ngeom += 1
+    if hit:
+        # Offset toward the emitter to keep the spot outside the surface.
+        toward_emitter = origin - endpoint
+        toward_emitter /= np.linalg.norm(toward_emitter)
+        spot = scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(spot, mujoco.mjtGeom.mjGEOM_SPHERE,
+                           np.array([0.009, 0, 0]), endpoint + toward_emitter * .002,
+                           np.eye(3).ravel(), [1, 0, 0, 1])
+        spot.emission = 1
+        scene.ngeom += 1
+
+
+def startup_control(data, target, duration):
+    """Ease into the startup target with zero initial/final velocity and acceleration."""
+    t = np.clip(data.time / duration, 0, 1)
+    data.ctrl[:] = target * (t**3 * (10 - 15*t + 6*t*t))
+
+
 def save_frame(path, pixels):
     """Write portable RGB image without additional image dependencies."""
     height, width, _ = pixels.shape
@@ -67,31 +109,37 @@ def save_frame(path, pixels):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--xml', default='assets/simple_pan_tilt_gimbal.xml')
-    parser.add_argument('--yaw', type=float, default=20)
-    parser.add_argument('--pitch', type=float, default=10)
+    parser.add_argument('--yaw', type=float, default=0)
+    parser.add_argument('--pitch', type=float, default=0)
     parser.add_argument('--lidar-fov', type=float, default=120, help='Horizontal degrees')
     parser.add_argument('--lidar-range', type=float, default=3, help='Maximum meters')
     parser.add_argument('--lidar-rays', type=int, default=121)
+    parser.add_argument('--laser-range', type=float, default=10, help='Laser maximum meters')
+    parser.add_argument('--move-duration', type=float, default=1.5, help='Startup motion duration in seconds')
     parser.add_argument('--camera', action='store_true', help='View through fixed front camera')
     parser.add_argument('--headless', type=Path, help='Write camera.ppm, lidar.ppm and scan.npz to directory; use MUJOCO_GL=egl')
     args = parser.parse_args()
     if not (0 < args.lidar_fov <= 360 and np.isfinite(args.lidar_range) and args.lidar_range > 0 and 2 <= args.lidar_rays <= 1000):
         parser.error('Require 0 < FOV <= 360, positive finite range, and 2..1000 rays')
+    if not (np.isfinite([args.yaw, args.pitch, args.laser_range, args.move_duration]).all() and args.laser_range > 0 and args.move_duration > 0):
+        parser.error('Angles must be finite; laser range and motion duration must be positive and finite')
     model = mujoco.MjModel.from_xml_path(args.xml)
     data = mujoco.MjData(model)
-    data.ctrl[:] = np.deg2rad([args.yaw, args.pitch])
+    target = np.clip(np.deg2rad([args.yaw, args.pitch]), model.actuator_ctrlrange[:, 0], model.actuator_ctrlrange[:, 1])
 
     def scan():
         return scan_lidar(model, data, args.lidar_fov, args.lidar_range, args.lidar_rays)
 
     if args.headless:
         args.headless.mkdir(parents=True, exist_ok=True)
-        for _ in range(2500):
+        for _ in range(int((args.move_duration + 3.5) / model.opt.timestep)):
+            startup_control(data, target, args.move_duration)
             mujoco.mj_step(model, data)
         mujoco.mj_forward(model, data)
         result = scan()
         with mujoco.Renderer(model, height=480, width=640, max_geom=5000) as renderer:
             renderer.update_scene(data, camera='fixed_camera')
+            draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))
             save_frame(args.headless / 'camera.ppm', renderer.render())
             camera = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(camera)
@@ -99,6 +147,7 @@ def main():
             camera.distance, camera.azimuth, camera.elevation = 5, 140, -65
             renderer.update_scene(data, camera=camera)
             draw_scan(renderer.scene, result, args.lidar_range)
+            draw_laser(renderer.scene, cast_laser(model, data, args.laser_range))
             save_frame(args.headless / 'lidar.ppm', renderer.render())
         np.savez(args.headless / 'scan.npz', origin=result[0], directions=result[1], ranges=result[2], hits=result[3])
         print(f'Exported RGB camera, LiDAR visualization and scan: {result[3].sum()}/{args.lidar_rays} hits')
@@ -110,15 +159,26 @@ def main():
             with viewer.lock():
                 viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
                 viewer.cam.fixedcamid = model.camera('fixed_camera').id
+        # Physics runs at 500 Hz; expensive ray casting and viewer sync run at 60 Hz.
+        # Accumulate wall time so drawing cost does not slow the simulated motors.
+        previous = time.monotonic()
+        accumulator = 0.0
         while viewer.is_running():
             start = time.monotonic()
-            mujoco.mj_step(model, data)
+            accumulator += min(start - previous, 0.1)
+            previous = start
+            while accumulator >= model.opt.timestep:
+                if data.time <= args.move_duration + model.opt.timestep:
+                    startup_control(data, target, args.move_duration)
+                mujoco.mj_step(model, data)
+                accumulator -= model.opt.timestep
             mujoco.mj_forward(model, data)
             with viewer.lock():
                 viewer.user_scn.ngeom = 0
                 draw_scan(viewer.user_scn, scan(), args.lidar_range)
+                draw_laser(viewer.user_scn, cast_laser(model, data, args.laser_range))
             viewer.sync()
-            time.sleep(max(0, model.opt.timestep - (time.monotonic() - start)))
+            time.sleep(max(0, 1 / 60 - (time.monotonic() - start)))
 
 
 if __name__ == '__main__':

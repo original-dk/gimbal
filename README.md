@@ -51,7 +51,7 @@ Run from this project directory so the default XML path resolves.
 ## Notes
 
 - Geometries are currently visual-only (`contype=0`, `conaffinity=0`) to keep this first model simple and avoid self-collision complications.
-- The laser housing is visual geometry. The laser ray itself should be calculated separately using MuJoCo ray casting (`mj_ray`) from `laser_origin` along the site's +X direction.
+- The preview casts a laser ray from `laser_origin` along its moving +X axis. The red beam stops at the nearest environment surface and shows a red hit spot.
 - The preview implements a planar LiDAR using `mj_ray`. It models geometric ranges, not radar Doppler, reflectivity, noise or material effects.
 - The 16x16 grid is best drawn as an image overlay initially, rather than as a collidable transparent object.
 - This model has not been calibrated against the physical gimbal. Replace all placeholder dimensions before using it for real-world angle prediction.
@@ -82,4 +82,25 @@ boolean `hits`. No-return rays use the maximum range with `hits=False`.
 Sensor scans include static and moving geometry in geom group 0. Device geometry
 uses group 1 to exclude self-returns; put new detectable obstacles in group 0.
 Visualization is a scene overlay, so it does not affect measurements or physics.
-The interactive camera mode shows this overlay; the exported RGB image is clean.
+The interactive camera mode shows this overlay; the exported RGB image includes the laser beam and spot, but omits the LiDAR overlay.
+
+## Laser and smooth motion
+
+The default yaw/pitch targets are now 0/0 degrees so the laser hits the center
+object. `--laser-range 10` controls maximum beam length in meters. No hit means
+a full-length beam without a spot. The laser shares LiDAR's environment group
+filter and excludes the device itself. Beam and spot are visual overlays, not
+physical lighting or material effects.
+
+```bash
+python scripts/preview_mujoco.py --camera --yaw 0 --pitch 0
+python scripts/preview_mujoco.py --yaw 20 --pitch 10 --move-duration 1.5
+```
+
+Startup commands use a smooth quintic trajectory; position actuators have damping
+ratio 1 to reduce ringing. Physics retains its 2 ms step while scans and drawing
+update at approximately 60 Hz. This avoids performing all ray casts and viewer
+synchronization at every physics step. Long stalls are limited to 100 ms of
+catch-up to keep the UI responsive; sustained overload can still slow simulation.
+Viewer actuator sliders remain available after the startup trajectory completes;
+manual slider jumps are direct targets and do not use the startup easing.
